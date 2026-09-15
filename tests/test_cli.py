@@ -11,6 +11,7 @@ import tests.constants as test_const
 
 import model_pipeline.constants as const
 from model_pipeline import cli
+from model_pipeline.consumer import ConsumerError
 from model_pipeline.manifest import (
     ArtifactInfo,
     EncryptionInfo,
@@ -178,3 +179,172 @@ def test_list_prints_published_versions(capsys: pytest.CaptureFixture[str]) -> N
     assert exit_code == 0
     mock_list.assert_called_once_with("me/repo")
     assert capsys.readouterr().out.splitlines() == ["1.0.0", "1.1.0"]
+
+
+def test_consume_requires_repo_and_version(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """consume must fail with a usage error when --repo/--version are unresolved."""
+    monkeypatch.delenv("MODEL_REPO_ID", raising=False)
+    monkeypatch.delenv("MODEL_VERSION", raising=False)
+    exit_code = cli.main(["consume"])
+    assert exit_code == 2
+    assert "--repo" in capsys.readouterr().err
+
+
+def test_consume_requires_workdir(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """consume must fail with a usage error when --workdir/MODEL_WORKDIR is unresolved."""
+    monkeypatch.delenv("MODEL_WORKDIR", raising=False)
+    exit_code = cli.main(["consume", "--repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 2
+    assert "workdir" in capsys.readouterr().err
+
+
+def test_consume_requires_encryption_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume must fail cleanly when no encryption key can be resolved."""
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("ENCRYPTION_KEY_FILE", raising=False)
+    exit_code = cli.main(
+        [
+            "consume",
+            "--repo",
+            "me/repo",
+            "--version",
+            "1.0.0",
+            "--workdir",
+            str(tmp_path / "model"),
+        ]
+    )
+    assert exit_code == 2
+    assert "encryption key" in capsys.readouterr().err
+
+
+def test_consume_key_file_argument_takes_precedence_over_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """consume's --key-file argument must win over ENCRYPTION_KEY_FILE from the environment."""
+    env_key_file = tmp_path / "env-key"
+    env_key_file.write_text(
+        base64.b64encode(test_const.OTHER_MASTER_KEY).decode("ascii"), encoding="utf-8"
+    )
+    arg_key_file = tmp_path / "arg-key"
+    arg_key_file.write_text(
+        base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii"), encoding="utf-8"
+    )
+    monkeypatch.setenv("ENCRYPTION_KEY_FILE", str(env_key_file))
+    fake_manifest = _fake_manifest()
+
+    with patch("model_pipeline.cli.consume", return_value=fake_manifest) as mock_consume:
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(tmp_path / "model"),
+                "--key-file",
+                str(arg_key_file),
+            ]
+        )
+    assert exit_code == 0
+    assert mock_consume.call_args.kwargs["master_key"] == test_const.TEST_MASTER_KEY
+
+
+def test_consume_runs_the_consumer_flow_without_smoke_test(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume must resolve config/secrets, call consumer.consume, and skip load_and_predict."""
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    fake_manifest = _fake_manifest()
+    workdir = tmp_path / "model"
+
+    with (
+        patch("model_pipeline.cli.consume", return_value=fake_manifest) as mock_consume,
+        patch("model_pipeline.cli.load_and_predict") as mock_load_and_predict,
+    ):
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(workdir),
+            ]
+        )
+
+    assert exit_code == 0
+    mock_consume.assert_called_once_with(
+        repo_id="me/repo",
+        version="1.0.0",
+        master_key=test_const.TEST_MASTER_KEY,
+        workdir=workdir,
+    )
+    mock_load_and_predict.assert_not_called()
+    assert "me/repo" in capsys.readouterr().out
+
+
+def test_consume_runs_the_smoke_test_when_requested(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume --smoke-test must call load_and_predict with the manifest's task hint."""
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    fake_manifest = _fake_manifest()
+    workdir = tmp_path / "model"
+
+    with (
+        patch("model_pipeline.cli.consume", return_value=fake_manifest),
+        patch(
+            "model_pipeline.cli.load_and_predict", return_value="'capital' (0.988)"
+        ) as mock_load_and_predict,
+    ):
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(workdir),
+                "--smoke-test",
+            ]
+        )
+
+    assert exit_code == 0
+    mock_load_and_predict.assert_called_once_with(workdir, "fill-mask")
+    assert "'capital' (0.988)" in capsys.readouterr().out
+
+
+def test_consume_reports_a_consumer_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume must return a non-zero exit code and print the reason on a ConsumerError."""
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    with patch("model_pipeline.cli.consume", side_effect=ConsumerError("decryption failed")):
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(tmp_path / "model"),
+            ]
+        )
+    assert exit_code == 1
+    assert "decryption failed" in capsys.readouterr().err

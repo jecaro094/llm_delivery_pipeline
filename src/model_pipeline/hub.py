@@ -2,10 +2,12 @@
 
 Isolating every Hugging Face Hub call behind this module keeps the network
 and authentication surface in one place, and is what lets the rest of the
-pipeline be tested against a mocked ``HfApi``/``snapshot_download`` instead
-of the real network. A repository token, when required, is only ever passed
-through to ``huggingface_hub``; it is never logged or included in any
-returned value or exception message.
+pipeline be tested against a mocked ``HfApi``/``snapshot_download``/
+``hf_hub_download`` instead of the real network. A repository token, when
+required, is only ever passed through to ``huggingface_hub``; it is never
+logged or included in any returned value or exception message. The consumer
+side never passes a token at all: the target artifact repo is public, so
+downloading the manifest and the encrypted artifact needs no authentication.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 import model_pipeline.constants as const
 
@@ -73,3 +75,21 @@ def upload_artifact(
         repo_id=repo_id,
         token=token,
     )
+
+
+def download_manifest(repo_id: str, version: str) -> bytes:
+    """Download and return the raw manifest.json bytes published for version under repo_id."""
+    logger.info("downloading manifest: repo=%s version=%s", repo_id, version)
+    local_path = hf_hub_download(
+        repo_id=repo_id, filename=f"{const.VERSIONS_PREFIX}/{version}/{const.MANIFEST_FILENAME}"
+    )
+    return Path(local_path).read_bytes()
+
+
+def download_artifact(repo_id: str, version: str) -> bytes:
+    """Download and return the raw encrypted artifact bytes published for version under repo_id."""
+    logger.info("downloading artifact: repo=%s version=%s", repo_id, version)
+    local_path = hf_hub_download(
+        repo_id=repo_id, filename=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}"
+    )
+    return Path(local_path).read_bytes()

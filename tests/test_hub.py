@@ -103,3 +103,36 @@ def test_upload_artifact_never_logs_the_token(caplog: pytest.LogCaptureFixture) 
             token=FAKE_TOKEN,
         )
     assert all(FAKE_TOKEN not in record.getMessage() for record in caplog.records)
+
+
+def test_download_manifest_reads_the_downloaded_file(tmp_path: Path) -> None:
+    """download_manifest must return the bytes of the file hf_hub_download reports."""
+    local_file = tmp_path / "manifest.json"
+    local_file.write_bytes(b'{"manifest_version": "1.0"}')
+    with patch("model_pipeline.hub.hf_hub_download", return_value=str(local_file)) as mock_dl:
+        content = hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
+    mock_dl.assert_called_once_with(
+        repo_id="me/bert-tiny-encrypted", filename="versions/1.0.0/manifest.json"
+    )
+    assert content == b'{"manifest_version": "1.0"}'
+
+
+def test_download_artifact_reads_the_downloaded_file(tmp_path: Path) -> None:
+    """download_artifact must return the bytes of the file hf_hub_download reports."""
+    local_file = tmp_path / "model.tar.enc"
+    local_file.write_bytes(b"ciphertext")
+    with patch("model_pipeline.hub.hf_hub_download", return_value=str(local_file)) as mock_dl:
+        content = hub.download_artifact("me/bert-tiny-encrypted", "1.0.0")
+    mock_dl.assert_called_once_with(
+        repo_id="me/bert-tiny-encrypted", filename="versions/1.0.0/model.tar.enc"
+    )
+    assert content == b"ciphertext"
+
+
+def test_download_manifest_and_artifact_never_pass_a_token() -> None:
+    """The consumer's download calls must never pass a token: the target repo is public."""
+    with patch("model_pipeline.hub.hf_hub_download", return_value="/dev/null") as mock_dl:
+        hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
+        hub.download_artifact("me/bert-tiny-encrypted", "1.0.0")
+    for call in mock_dl.call_args_list:
+        assert "token" not in call.kwargs

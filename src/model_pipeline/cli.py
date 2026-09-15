@@ -1,4 +1,4 @@
-"""Command-line interface: ``keygen``, ``produce``, and ``list`` subcommands.
+"""Command-line interface: ``keygen``, ``produce``, ``list``, and ``consume`` subcommands.
 
 Configuration follows the precedence documented in the project plan:
 explicit CLI arguments win over environment variables, which win over
@@ -17,17 +17,20 @@ import argparse
 import base64
 import secrets
 import sys
+from pathlib import Path
 
 import model_pipeline.constants as const
 from model_pipeline import hub
+from model_pipeline.consumer import ConsumerError, consume, load_and_predict
 from model_pipeline.keys import KeyLoadError, resolve_key
-from model_pipeline.manifest import serialize_manifest
+from model_pipeline.manifest import ManifestError, serialize_manifest
+from model_pipeline.packaging import PackagingError
 from model_pipeline.producer import ProducerError, produce
 from model_pipeline.settings import Settings
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser with its keygen/produce/list subcommands."""
+    """Build the top-level argument parser with its keygen/produce/list/consume subcommands."""
     parser = argparse.ArgumentParser(prog="model_pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -42,12 +45,27 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="list published artifact versions")
     list_parser.add_argument("--repo")
 
+    consume_parser = subparsers.add_parser(
+        "consume", help="download, verify, decrypt, and unpack a model"
+    )
+    consume_parser.add_argument("--repo")
+    consume_parser.add_argument("--version")
+    consume_parser.add_argument("--key-file", type=Path)
+    consume_parser.add_argument("--workdir", type=Path)
+    consume_parser.add_argument("--smoke-test", action="store_true")
+
     return parser
 
 
-def _resolve_master_key(settings: Settings) -> bytes:
-    """Resolve the master key for the producer from settings.encryption_key(_file)."""
-    return resolve_key(key_file=settings.encryption_key_file, key_value=settings.encryption_key)
+def _resolve_master_key(settings: Settings, *, key_file_override: Path | None = None) -> bytes:
+    """Resolve the master key from settings.encryption_key(_file), or from key_file_override.
+
+    key_file_override, when given, takes precedence over
+    settings.encryption_key_file, following the CLI argument > environment
+    variable precedence used throughout the pipeline.
+    """
+    key_file = key_file_override if key_file_override is not None else settings.encryption_key_file
+    return resolve_key(key_file=key_file, key_value=settings.encryption_key)
 
 
 def cmd_keygen(_args: argparse.Namespace) -> int:
@@ -111,10 +129,53 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_consume(args: argparse.Namespace) -> int:
+    """Resolve consume config and secrets, run the consumer flow, and optionally smoke-test."""
+    settings = Settings()
+
+    repo_id = args.repo if args.repo is not None else settings.model_repo_id
+    version = args.version if args.version is not None else settings.model_version
+    if repo_id is None or version is None:
+        print("consume requires --repo and --version (or their env vars)", file=sys.stderr)
+        return 2
+
+    workdir = args.workdir if args.workdir is not None else settings.model_workdir
+    if workdir is None:
+        print("consume requires --workdir (or MODEL_WORKDIR)", file=sys.stderr)
+        return 2
+
+    try:
+        master_key = _resolve_master_key(settings, key_file_override=args.key_file)
+    except KeyLoadError as exc:
+        print(f"could not load the encryption key: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        artifact_manifest = consume(
+            repo_id=repo_id, version=version, master_key=master_key, workdir=workdir
+        )
+    except (ConsumerError, ManifestError, PackagingError) as exc:
+        print(f"consume failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"model verified and decrypted from {repo_id} version {version} into {workdir}")
+
+    if args.smoke_test:
+        try:
+            prediction = load_and_predict(workdir, artifact_manifest["model"]["task_hint"])
+        except ConsumerError as exc:
+            print(f"smoke test failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"smoke test prediction: {prediction}")
+
+    return 0
+
+
 _COMMANDS = {
     "keygen": cmd_keygen,
     "produce": cmd_produce,
     "list": cmd_list,
+    "consume": cmd_consume,
 }
 
 
