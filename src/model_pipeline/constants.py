@@ -55,3 +55,28 @@ KDF_LABEL = "HKDF-SHA256"
 # Schema version of the published manifest.json, independent of the
 # container's own format_version.
 MANIFEST_VERSION = "1.0"
+
+# --- Hugging Face Hub layout ---
+
+# Prefix under which every published artifact version lives in a target repo.
+VERSIONS_PREFIX = "versions"
+
+ARTIFACT_FILENAME = "model.tar.enc"
+MANIFEST_FILENAME = "manifest.json"
+
+# Name of the Kubernetes Secret expected to hold the decryption key, recorded
+# in the manifest as a label so a consumer can detect a key mismatch early.
+DEFAULT_KEY_ID = "model-encryption-key"
+
+# --- CLI defaults ---
+
+# The recognized environment variable names themselves are documented in
+# .env.example, the single source of truth for the pipeline's external
+# configuration contract; model_pipeline.config.load_dotenv() and the CLI
+# read them straight from the process environment by name.
+DEFAULT_SOURCE_MODEL = "prajjwal1/bert-tiny"
+DEFAULT_TASK_HINT = "fill-mask"
+
+# --- Producer metadata ---
+
+TOOL_NAME = "model_pipeline"

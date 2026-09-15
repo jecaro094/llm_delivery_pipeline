@@ -1,12 +1,6 @@
 """Entry point for ``python -m model_pipeline``."""
 
-import sys
-
-
-def main() -> int:
-    print("model_pipeline: no subcommands implemented yet", file=sys.stderr)
-    return 1
-
+from model_pipeline.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())
