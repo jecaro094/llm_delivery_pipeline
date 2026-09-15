@@ -17,3 +17,8 @@ OTHER_MASTER_KEY = b"\x22" * KEY_SIZE
 
 # Small chunk size used to exercise multi-chunk containers cheaply.
 SMALL_TEST_CHUNK_SIZE = 8
+
+# --- Key loading test fixtures ---
+
+# Decodes to 16 bytes, i.e. the wrong length for an AES-256 key.
+WRONG_LENGTH_KEY_BYTES = b"\x33" * 16

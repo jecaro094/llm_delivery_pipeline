@@ -49,3 +49,9 @@ HKDF_INFO = b"model-pipeline/v1"
 # algorithm mismatch before attempting to decrypt.
 ALGORITHM_LABEL = "AES-256-GCM"
 KDF_LABEL = "HKDF-SHA256"
+
+# --- Manifest ---
+
+# Schema version of the published manifest.json, independent of the
+# container's own format_version.
+MANIFEST_VERSION = "1.0"
