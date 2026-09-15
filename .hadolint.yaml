@@ -1,0 +1,13 @@
+ignored:
+  # The unpinned installs are `pip install --upgrade pip` and `pip install
+  # .[extra]`: the former tracks the latest pip on purpose, the latter installs
+  # the local project itself, whose version already comes from pyproject.toml
+  # and has no `pip install .==<version>` syntax to pin against.
+  - DL3013
+  # The container user is created by name (model-pipeline) for readability;
+  # both Dockerfiles already fix its UID/GID to 1000 via `useradd --uid/--gid`,
+  # which is what actually matters for Kubernetes securityContext checks.
+  - DL3066
+  # SC2102 is a false positive here: it misreads the `.[producer]`/`.[consumer]`
+  # pip extras syntax as a shell character-range glob.
+  - SC2102

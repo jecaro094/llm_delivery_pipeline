@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Cryptography's crypto.py must not regress below its current coverage level.
+  CRYPTO_COVERAGE_THRESHOLD: "90"
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      # producer extras (huggingface-hub) are enough: mypy resolves
+      # transformers/torch through ignore_missing_imports overrides,
+      # so the heavy consumer extras are never needed to type-check.
+      - run: pip install --upgrade pip && pip install .[producer,dev]
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      # The test suite mocks transformers/torch (see tests/test_consumer.py)
+      # precisely so the environment never needs the heavy consumer extras.
+      - run: pip install --upgrade pip && pip install .[producer,dev]
+      # `python -m pytest`, not the `pytest` console script: tests/ has no
+      # __init__.py, so `import tests.constants` only resolves when the repo
+      # root is on sys.path, which `python -m` guarantees and a bare
+      # `pytest` invocation does not.
+      - run: python -m pytest --cov=model_pipeline --cov-report=term-missing
+      - run: coverage report --include="*/crypto.py" --fail-under=${{ env.CRYPTO_COVERAGE_THRESHOLD }}
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install --upgrade pip && pip install .[producer,consumer,dev] pip-audit
+      - run: pip-audit
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile.producer
+          config: .hadolint.yaml
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile.consumer
+          config: .hadolint.yaml
+
+  build:
+    name: Build images
+    needs: [quality, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.producer
+          push: false
+          tags: model-pipeline-producer:ci
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.consumer
+          push: false
+          tags: model-pipeline-consumer:ci
