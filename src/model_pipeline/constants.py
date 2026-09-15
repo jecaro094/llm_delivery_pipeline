@@ -74,9 +74,19 @@ DEFAULT_KEY_ID = "model-encryption-key"
 # .env.example, the single source of truth for the pipeline's external
 # configuration contract; model_pipeline.config.load_dotenv() and the CLI
 # read them straight from the process environment by name.
-DEFAULT_SOURCE_MODEL = "prajjwal1/bert-tiny"
+DEFAULT_SOURCE_MODEL = "google/bert_uncased_L-2_H-128_A-2"
 DEFAULT_TASK_HINT = "fill-mask"
 
 # --- Producer metadata ---
 
 TOOL_NAME = "model_pipeline"
+
+# --- Source model validation ---
+
+# Some published Hugging Face repos (see PLAN.md, decision #1) predate the
+# convention of recording an architecture identifier in their config file
+# and omit it entirely; transformers then cannot auto-detect the model
+# class, which is otherwise only discovered once the consumer tries to load
+# it. The producer rejects such a source model before encrypting it.
+MODEL_CONFIG_FILENAME = "config.json"
+MODEL_TYPE_KEY = "model_type"

@@ -9,6 +9,7 @@ manifest that was published alongside it.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +46,9 @@ def produce(
 
     The target repo is created as a public repo if it does not exist yet,
     and publishing a version that already exists is refused: artifact
-    versions are immutable once published.
+    versions are immutable once published. The downloaded snapshot is also
+    rejected before encryption if its architecture cannot be auto-detected
+    (see :func:`_validate_model_type`).
     """
     hub.ensure_public_repo(target_repo, token=hf_token)
     if version in hub.list_versions(target_repo):
@@ -55,6 +58,7 @@ def produce(
         workdir = Path(raw_workdir)
         resolved_revision = hub.resolve_model_revision(source_model)
         hub.download_model_snapshot(source_model, resolved_revision, workdir)
+        _validate_model_type(workdir, source_model)
         plaintext_tar = packaging.pack_directory(workdir)
 
     encrypted_container = crypto.encrypt(plaintext_tar, master_key, chunk_size=chunk_size)
@@ -91,3 +95,34 @@ def produce(
     )
 
     return artifact_manifest
+
+
+def _validate_model_type(workdir: Path, source_model: str) -> None:
+    """Reject source_model if its downloaded config.json has no model_type key.
+
+    Without model_type, transformers cannot auto-detect the model's
+    architecture; that failure would otherwise only surface later, in the
+    consumer, after the artifact has already been encrypted and published.
+    Failing here, while the plaintext snapshot in workdir is still around
+    to inspect, is cheaper and gives a clearer error than that.
+    """
+    config_path = workdir / const.MODEL_CONFIG_FILENAME
+    if not config_path.is_file():
+        raise ProducerError(
+            f"{source_model!r} has no {const.MODEL_CONFIG_FILENAME}: "
+            "cannot validate its architecture"
+        )
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ProducerError(
+            f"{source_model!r}'s {const.MODEL_CONFIG_FILENAME} is not valid JSON"
+        ) from exc
+
+    if const.MODEL_TYPE_KEY not in config:
+        raise ProducerError(
+            f"{source_model!r}'s {const.MODEL_CONFIG_FILENAME} has no {const.MODEL_TYPE_KEY!r} "
+            "key, so transformers cannot auto-detect its architecture; pick a different source "
+            "model whose config.json declares it"
+        )

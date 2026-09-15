@@ -114,6 +114,54 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
     assert published_manifest["model"]["source_revision"] == "deadbeef"
 
 
+def test_produce_rejects_a_source_model_without_a_model_type(
+    fake_hub: FakeHub, tmp_path: Path
+) -> None:
+    """produce must reject a source model whose config.json has no model_type key."""
+    (fake_hub.source_dir / "config.json").write_text('{"hidden_size": 128}', encoding="utf-8")
+
+    with pytest.raises(ProducerError, match="model_type"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+    assert fake_hub.uploaded_tokens == []
+
+
+def test_produce_rejects_a_source_model_without_a_config_file(fake_hub: FakeHub) -> None:
+    """produce must reject a source model whose snapshot has no config.json at all."""
+    (fake_hub.source_dir / "config.json").unlink()
+
+    with pytest.raises(ProducerError, match="config.json"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+
+
+def test_produce_rejects_a_source_model_with_invalid_json_config(fake_hub: FakeHub) -> None:
+    """produce must reject a source model whose config.json is not valid JSON."""
+    (fake_hub.source_dir / "config.json").write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ProducerError, match="not valid JSON"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+
+
 def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> None:
     """produce must reject publishing a version that already exists in the target repo."""
     produce(

@@ -6,6 +6,7 @@ docs/
 k8s/
 scripts/
 *.md
+!README.md
 Capacity_technical_test.pdf
 
 .venv/
