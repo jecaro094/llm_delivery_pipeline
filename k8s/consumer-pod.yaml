@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: model-consumer
+  namespace: confidential-models
+spec:
+  # Left Never (rather than the Job pattern used by the producer) so a
+  # finished pod stays around for `kubectl logs` to inspect, without
+  # Kubernetes restarting or garbage-collecting it.
+  restartPolicy: Never
+  serviceAccountName: model-workload
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    # Without fsGroup, Kubernetes mounts Secret volumes owned by root
+    # regardless of defaultMode, so the non-root container could not read
+    # the key file; fsGroup makes the mounted files group-owned by 1000 too.
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: consumer
+      image: model-pipeline-consumer:local
+      imagePullPolicy: IfNotPresent
+      args: ["consume", "--smoke-test"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: MODEL_REPO_ID
+          value: jecaro/bert-tiny-encrypted
+        - name: MODEL_VERSION
+          value: "1.0.3"
+        - name: MODEL_WORKDIR
+          value: /mnt/model
+        - name: ENCRYPTION_KEY_FILE
+          value: /etc/model-keys/encryption-key
+      volumeMounts:
+        # Mounted read-only: the consumer only ever reads the decryption
+        # key, it never needs to write it (see PLAN.md, decision #6).
+        - name: encryption-key
+          mountPath: /etc/model-keys
+          readOnly: true
+        # tmpfs: the decrypted model is written here and never touches the
+        # node's disk (see PLAN.md, decision #5).
+        - name: model-workdir
+          mountPath: /mnt/model
+        - name: tmp
+          mountPath: /tmp
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+  volumes:
+    - name: encryption-key
+      secret:
+        secretName: model-encryption-key
+        defaultMode: 0440
+    - name: model-workdir
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi
+    - name: tmp
+      emptyDir: {}

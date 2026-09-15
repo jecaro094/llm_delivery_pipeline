@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-producer
+  namespace: confidential-models
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: model-workload
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # Without fsGroup, Kubernetes mounts Secret volumes owned by root
+        # regardless of defaultMode, so the non-root container could not
+        # read the key file; fsGroup makes the mounted files group-owned by
+        # 1000 as well.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: producer
+          image: model-pipeline-producer:local
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SOURCE_MODEL
+              value: google/bert_uncased_L-2_H-128_A-2
+            - name: MODEL_REPO_ID
+              value: jecaro/bert-tiny-encrypted
+            - name: MODEL_VERSION
+              value: "1.0.3"
+            - name: ENCRYPTION_KEY_FILE
+              value: /etc/model-keys/encryption-key
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-credentials
+                  key: hf-token
+          volumeMounts:
+            - name: encryption-key
+              mountPath: /etc/model-keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: encryption-key
+          secret:
+            secretName: model-encryption-key
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
