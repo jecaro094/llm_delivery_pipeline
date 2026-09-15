@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "model-pipeline"
+version = "0.1.0"
+description = "PoC of a confidential distribution pipeline for LLM/ML models (Layer 1)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+producer = [
+    "huggingface-hub>=0.25.0",
+]
+consumer = [
+    "huggingface-hub>=0.25.0",
+    "torch>=2.4.0",
+    "transformers>=4.45.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/model_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "S",   # flake8-bandit
+    "C4",  # flake8-comprehensions
+]
+ignore = [
+    "S101", # assert usage (needed in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["model_pipeline"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["huggingface_hub.*", "transformers.*", "torch.*"]
+ignore_missing_imports = true
