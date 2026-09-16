@@ -67,6 +67,25 @@ jobs:
           dockerfile: docker/Dockerfile.consumer
           config: .hadolint.yaml
 
+  k8s-manifests:
+    name: K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # kind, not minikube: it runs Kubernetes nodes as plain Docker
+      # containers, so it needs no KVM/nested virtualization and starts in
+      # seconds on any GitHub-hosted runner.
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+      # Server-side dry-run: the manifests are sent to a real API server
+      # (schema, enum values, immutability rules) without persisting any
+      # object, so this needs neither the Secrets nor the container images
+      # the real workloads depend on. It only catches structural mistakes
+      # in the manifests, not whether the pipeline behaves correctly at
+      # runtime — that is what the local minikube demo in README.md is for.
+      - run: kubectl apply -k k8s/ --dry-run=server
+
   build:
     name: Build images
     needs: [quality, test]
