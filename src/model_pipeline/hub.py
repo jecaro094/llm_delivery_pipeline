@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 import model_pipeline.constants as const
 
@@ -47,10 +48,18 @@ def ensure_public_repo(repo_id: str, token: str) -> None:
 
 
 def list_versions(repo_id: str) -> list[str]:
-    """Return the sorted list of artifact versions published under repo_id."""
+    """Return the sorted list of artifact versions published under repo_id.
+
+    Returns an empty list, rather than raising, when repo_id does not exist
+    yet: every caller of this function treats "the repo was never created"
+    the same as "nothing has been published there".
+    """
     prefix = f"{const.VERSIONS_PREFIX}/"
     suffix = f"/{const.MANIFEST_FILENAME}"
-    files = HfApi().list_repo_files(repo_id)
+    try:
+        files = HfApi().list_repo_files(repo_id)
+    except RepositoryNotFoundError:
+        return []
     versions = {
         f[len(prefix) : -len(suffix)] for f in files if f.startswith(prefix) and f.endswith(suffix)
     }
@@ -78,11 +87,22 @@ def upload_artifact(
 
 
 def download_manifest(repo_id: str, version: str) -> bytes:
-    """Download and return the raw manifest.json bytes published for version under repo_id."""
+    """Download and return the raw manifest.json bytes published for version under repo_id.
+
+    Raises HubError, instead of leaking the underlying huggingface_hub
+    exception, when repo_id does not exist or has no manifest published for
+    version: this is the one place callers need to handle "nothing
+    published there", the same way every other Hub failure in this module
+    is kept out of the rest of the pipeline.
+    """
     logger.info("downloading manifest: repo=%s version=%s", repo_id, version)
-    local_path = hf_hub_download(
-        repo_id=repo_id, filename=f"{const.VERSIONS_PREFIX}/{version}/{const.MANIFEST_FILENAME}"
-    )
+    try:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=f"{const.VERSIONS_PREFIX}/{version}/{const.MANIFEST_FILENAME}",
+        )
+    except (RepositoryNotFoundError, EntryNotFoundError) as exc:
+        raise HubError(f"no manifest published for {repo_id!r} version {version!r}") from exc
     return Path(local_path).read_bytes()
 
 

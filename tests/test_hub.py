@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 from model_pipeline import hub
 
@@ -71,6 +72,16 @@ def test_list_versions_returns_empty_for_a_fresh_repo() -> None:
     assert versions == []
 
 
+def test_list_versions_returns_empty_when_the_repo_does_not_exist() -> None:
+    """list_versions must return an empty list, not raise, for a never-created repo."""
+    with patch("model_pipeline.hub.HfApi") as mock_api_cls:
+        mock_api_cls.return_value.list_repo_files.side_effect = RepositoryNotFoundError(
+            "not found", response=MagicMock()
+        )
+        versions = hub.list_versions("me/does-not-exist")
+    assert versions == []
+
+
 def test_upload_artifact_uploads_both_files_under_the_version_prefix() -> None:
     """upload_artifact must upload the encrypted artifact and the manifest at the right paths."""
     with patch("model_pipeline.hub.HfApi") as mock_api_cls:
@@ -115,6 +126,20 @@ def test_download_manifest_reads_the_downloaded_file(tmp_path: Path) -> None:
         repo_id="me/bert-tiny-encrypted", filename="versions/1.0.0/manifest.json"
     )
     assert content == b'{"manifest_version": "1.0"}'
+
+
+def test_download_manifest_raises_hub_error_for_a_missing_repo_or_version() -> None:
+    """download_manifest must translate a not-found Hub error into HubError."""
+    with patch(
+        "model_pipeline.hub.hf_hub_download",
+        side_effect=RepositoryNotFoundError("not found", response=MagicMock()),
+    ):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
+
+    with patch("model_pipeline.hub.hf_hub_download", side_effect=EntryNotFoundError("no entry")):
+        with pytest.raises(hub.HubError):
+            hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
 
 
 def test_download_artifact_reads_the_downloaded_file(tmp_path: Path) -> None:
