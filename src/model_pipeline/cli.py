@@ -9,6 +9,16 @@ overrides the corresponding field. Secrets (the Hugging Face token and the
 encryption key) are deliberately only ever accepted through environment
 variables or a mounted key file, never as a CLI argument, so they cannot
 leak into shell history or a process listing.
+
+``produce`` and ``consume`` both resolve the requested version against the
+target repo before doing anything else. On a real terminal, a version
+conflict (already published for ``produce``, not published for
+``consume``) prompts for a replacement instead of failing outright; in a
+non-interactive context (a Kubernetes Job/Pod, a CI run) it fails fast
+with no prompt, since no one is there to answer it. ``--check-only`` runs
+just that resolution step, printing the confirmed version and exiting
+without publishing or downloading anything -- what ``scripts/demo.sh``
+uses to catch a version conflict before ever creating a Job or Pod.
 """
 
 from __future__ import annotations
@@ -21,11 +31,16 @@ from pathlib import Path
 
 import model_pipeline.constants as const
 from model_pipeline import hub
-from model_pipeline.consumer import ConsumerError, consume, load_and_predict
+from model_pipeline.consumer import (
+    ConsumerError,
+    consume,
+    load_and_predict,
+    resolve_consume_version,
+)
 from model_pipeline.keys import KeyLoadError, resolve_key
 from model_pipeline.manifest import ManifestError, serialize_manifest
 from model_pipeline.packaging import PackagingError
-from model_pipeline.producer import ProducerError, produce
+from model_pipeline.producer import ProducerError, produce, resolve_produce_version
 from model_pipeline.settings import Settings
 
 
@@ -41,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     produce_parser.add_argument("--target-repo")
     produce_parser.add_argument("--version")
     produce_parser.add_argument("--chunk-size", type=int)
+    produce_parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="only resolve/validate --version against --target-repo and print it; publish nothing",
+    )
 
     list_parser = subparsers.add_parser("list", help="list published artifact versions")
     list_parser.add_argument("--repo")
@@ -53,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     consume_parser.add_argument("--key-file", type=Path)
     consume_parser.add_argument("--workdir", type=Path)
     consume_parser.add_argument("--smoke-test", action="store_true")
+    consume_parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="only resolve/validate --version against --repo and print it; download nothing",
+    )
 
     return parser
 
@@ -85,6 +110,16 @@ def cmd_produce(args: argparse.Namespace) -> int:
     if target_repo is None or version is None:
         print("produce requires --target-repo and --version (or their env vars)", file=sys.stderr)
         return 2
+
+    if args.check_only or sys.stdin.isatty():
+        try:
+            version = resolve_produce_version(target_repo, version, interactive=sys.stdin.isatty())
+        except ProducerError as exc:
+            print(f"produce failed: {exc}", file=sys.stderr)
+            return 1
+        if args.check_only:
+            print(version)
+            return 0
 
     if not settings.hf_token:
         print("HF_TOKEN must be set to publish to Hugging Face Hub", file=sys.stderr)
@@ -138,6 +173,16 @@ def cmd_consume(args: argparse.Namespace) -> int:
     if repo_id is None or version is None:
         print("consume requires --repo and --version (or their env vars)", file=sys.stderr)
         return 2
+
+    if args.check_only or sys.stdin.isatty():
+        try:
+            version = resolve_consume_version(repo_id, version, interactive=sys.stdin.isatty())
+        except ConsumerError as exc:
+            print(f"consume failed: {exc}", file=sys.stderr)
+            return 1
+        if args.check_only:
+            print(version)
+            return 0
 
     workdir = args.workdir if args.workdir is not None else settings.model_workdir
     if workdir is None:

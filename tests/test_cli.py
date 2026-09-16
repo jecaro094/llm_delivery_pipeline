@@ -145,6 +145,42 @@ def test_produce_reports_a_producer_error(
     assert "version exists" in capsys.readouterr().err
 
 
+def test_produce_check_only_prints_the_version_and_does_not_publish(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """produce --check-only must print the confirmed version and never call producer.produce."""
+    with (
+        patch("model_pipeline.cli.resolve_produce_version", return_value="1.0.0") as mock_resolve,
+        patch("model_pipeline.cli.produce") as mock_produce,
+    ):
+        exit_code = cli.main(
+            ["produce", "--target-repo", "me/repo", "--version", "1.0.0", "--check-only"]
+        )
+    assert exit_code == 0
+    mock_resolve.assert_called_once_with("me/repo", "1.0.0", interactive=False)
+    mock_produce.assert_not_called()
+    assert capsys.readouterr().out.strip() == "1.0.0"
+
+
+def test_produce_check_only_reports_a_conflict_without_publishing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """produce --check-only must report a version conflict and exit 1 without publishing."""
+    with (
+        patch(
+            "model_pipeline.cli.resolve_produce_version",
+            side_effect=ProducerError("version '1.0.0' already exists in 'me/repo'"),
+        ),
+        patch("model_pipeline.cli.produce") as mock_produce,
+    ):
+        exit_code = cli.main(
+            ["produce", "--target-repo", "me/repo", "--version", "1.0.0", "--check-only"]
+        )
+    assert exit_code == 1
+    mock_produce.assert_not_called()
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_key_file_takes_precedence_over_key_value(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -325,6 +361,49 @@ def test_consume_runs_the_smoke_test_when_requested(
     assert exit_code == 0
     mock_load_and_predict.assert_called_once_with(workdir, "fill-mask")
     assert "'capital' (0.988)" in capsys.readouterr().out
+
+
+def test_consume_check_only_prints_the_version_and_does_not_download(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume --check-only must print the confirmed version and never call consumer.consume."""
+    with (
+        patch("model_pipeline.cli.resolve_consume_version", return_value="1.0.0") as mock_resolve,
+        patch("model_pipeline.cli.consume") as mock_consume,
+    ):
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(tmp_path / "model"),
+                "--check-only",
+            ]
+        )
+    assert exit_code == 0
+    mock_resolve.assert_called_once_with("me/repo", "1.0.0", interactive=False)
+    mock_consume.assert_not_called()
+    assert capsys.readouterr().out.strip() == "1.0.0"
+
+
+def test_consume_check_only_reports_a_mismatch_without_downloading(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """consume --check-only must report a missing version and exit 1 without downloading."""
+    with (
+        patch(
+            "model_pipeline.cli.resolve_consume_version",
+            side_effect=ConsumerError("version '1.0.0' is not published in 'me/repo'"),
+        ),
+        patch("model_pipeline.cli.consume") as mock_consume,
+    ):
+        exit_code = cli.main(["consume", "--repo", "me/repo", "--version", "1.0.0", "--check-only"])
+    assert exit_code == 1
+    mock_consume.assert_not_called()
+    assert "not published" in capsys.readouterr().err
 
 
 def test_consume_reports_a_consumer_error(
