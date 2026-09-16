@@ -12,14 +12,20 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import tests.constants as test_const
 
 from model_pipeline import consumer, crypto, packaging
 from model_pipeline import manifest as manifest_module
-from model_pipeline.consumer import ConsumerError, consume, load_and_predict
+from model_pipeline.consumer import (
+    ConsumerError,
+    consume,
+    load_and_predict,
+    resolve_consume_version,
+)
+from model_pipeline.hub import HubError
 
 REPO_ID = "me/bert-tiny-encrypted"
 VERSION = "1.0.0"
@@ -64,10 +70,16 @@ def _build_manifest_and_artifact(
 class FakeHub:
     """In-memory stand-in for model_pipeline.hub's download side."""
 
-    def __init__(self, manifest_bytes: bytes, artifact_bytes: bytes) -> None:
-        """Store the manifest and artifact bytes this fake hub will serve."""
+    def __init__(
+        self,
+        manifest_bytes: bytes,
+        artifact_bytes: bytes,
+        published_versions: list[str] | None = None,
+    ) -> None:
+        """Store the manifest/artifact bytes and published versions this fake hub will serve."""
         self.manifest_bytes = manifest_bytes
         self.artifact_bytes = artifact_bytes
+        self.published_versions = published_versions or [VERSION]
         self.download_calls: list[tuple[str, str, str]] = []
 
     def download_manifest(self, repo_id: str, version: str) -> bytes:
@@ -79,6 +91,10 @@ class FakeHub:
         """Record the call and return the stored artifact bytes."""
         self.download_calls.append(("artifact", repo_id, version))
         return self.artifact_bytes
+
+    def list_versions(self, repo_id: str) -> list[str]:
+        """Return the fixed list of published versions this fake hub was built with."""
+        return self.published_versions
 
 
 @pytest.fixture
@@ -175,6 +191,73 @@ def test_consume_rejects_a_tampered_artifact(
             master_key=test_const.TEST_MASTER_KEY,
             workdir=tmp_path / "restored-model",
         )
+
+
+def test_consume_reports_a_missing_artifact_as_a_consumer_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """consume must raise ConsumerError, not leak HubError, when nothing is published."""
+
+    class MissingHub:
+        def download_manifest(self, repo_id: str, version: str) -> bytes:
+            raise HubError(f"no manifest published for {repo_id!r} version {version!r}")
+
+    monkeypatch.setattr(consumer, "hub", MissingHub())
+
+    with pytest.raises(ConsumerError, match="no manifest published"):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+
+
+def test_resolve_consume_version_returns_a_published_version_unchanged(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """resolve_consume_version must return version as-is when it is already published."""
+    assert resolve_consume_version(REPO_ID, VERSION, interactive=False) == VERSION
+    assert resolve_consume_version(REPO_ID, VERSION, interactive=True) == VERSION
+
+
+def test_resolve_consume_version_raises_non_interactively_on_mismatch(
+    monkeypatch: pytest.MonkeyPatch, fake_hub_with_valid_artifact: FakeHub
+) -> None:
+    """resolve_consume_version must raise ConsumerError, not prompt, when interactive is False."""
+    with pytest.raises(ConsumerError, match="not published"):
+        resolve_consume_version(REPO_ID, "9.9.9", interactive=False)
+
+
+def test_resolve_consume_version_raises_when_nothing_is_published(
+    monkeypatch: pytest.MonkeyPatch, fake_hub_with_valid_artifact: FakeHub
+) -> None:
+    """resolve_consume_version must raise ConsumerError when repo_id has no published versions."""
+    fake_hub_with_valid_artifact.published_versions = []
+    with pytest.raises(ConsumerError, match="no published artifact versions"):
+        resolve_consume_version(REPO_ID, VERSION, interactive=True)
+
+
+def test_resolve_consume_version_prompts_until_a_published_version_is_given(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """resolve_consume_version must reprompt on the terminal until a published version is given."""
+    fake_hub_with_valid_artifact.published_versions = [VERSION, "1.1.0"]
+
+    with patch("builtins.input", side_effect=["9.9.9", "1.1.0"]):
+        resolved = resolve_consume_version(REPO_ID, "unpublished", interactive=True)
+    assert resolved == "1.1.0"
+
+
+def test_resolve_consume_version_prompt_blank_accepts_the_latest(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """resolve_consume_version must default to the latest published version when left blank."""
+    fake_hub_with_valid_artifact.published_versions = [VERSION, "1.1.0"]
+
+    with patch("builtins.input", return_value=""):
+        resolved = resolve_consume_version(REPO_ID, "unpublished", interactive=True)
+    assert resolved == "1.1.0"
 
 
 def test_load_and_predict_rejects_an_unsupported_task_hint(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ manifest that was published alongside it.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,8 +52,9 @@ def produce(
     (see :func:`_validate_model_type`).
     """
     hub.ensure_public_repo(target_repo, token=hf_token)
-    if version in hub.list_versions(target_repo):
-        raise ProducerError(f"version {version!r} already exists in {target_repo!r}")
+    existing_versions = hub.list_versions(target_repo)
+    if version in existing_versions:
+        raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
 
     with tempfile.TemporaryDirectory(prefix="model-pipeline-produce-") as raw_workdir:
         workdir = Path(raw_workdir)
@@ -95,6 +97,78 @@ def produce(
     )
 
     return artifact_manifest
+
+
+def resolve_produce_version(target_repo: str, version: str, *, interactive: bool) -> str:
+    """Return a version confirmed not to already exist in target_repo.
+
+    Looks up the versions already published under target_repo. If version
+    is free, it is returned unchanged. If it is already taken and
+    interactive is True, prompts on the terminal for a replacement
+    (suggesting the next available version, see suggest_next_version),
+    looping until a free one is entered. If interactive is False -- e.g.
+    running unattended inside a Kubernetes Job, or from scripts/demo.sh's
+    preflight check -- raises ProducerError describing the conflict instead
+    of blocking on input that will never arrive, exactly like produce()
+    itself already does.
+    """
+    existing_versions = hub.list_versions(target_repo)
+    if version not in existing_versions:
+        return version
+    if not interactive:
+        raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
+
+    print(_version_exists_message(version, target_repo, existing_versions), file=sys.stderr)
+    suggestion = suggest_next_version(existing_versions)
+    while True:
+        hint = f" [{suggestion}]" if suggestion else ""
+        print(f"Enter a version to publish under {target_repo!r}{hint}: ", end="", file=sys.stderr)
+        sys.stderr.flush()
+        candidate = input().strip() or suggestion
+        if not candidate:
+            print("a version is required", file=sys.stderr)
+            continue
+        if candidate not in existing_versions:
+            return candidate
+        print(
+            f"version {candidate!r} already exists in {target_repo!r}; try another",
+            file=sys.stderr,
+        )
+
+
+def _version_exists_message(version: str, target_repo: str, existing_versions: list[str]) -> str:
+    """Build the error message for a rejected produce() call over an already-published version.
+
+    Artifact versions are immutable once published (see PLAN.md, decision
+    7), so this never resolves the conflict automatically; it only points
+    the operator at a version they can pass explicitly on retry.
+    """
+    message = f"version {version!r} already exists in {target_repo!r}"
+    suggestion = suggest_next_version(existing_versions)
+    if suggestion is not None:
+        message += f"; the next available version looks like {suggestion!r}"
+    return message
+
+
+def suggest_next_version(existing_versions: list[str]) -> str | None:
+    """Return a patch-bump one past the highest dotted-integer version in existing_versions.
+
+    Returns None when none of existing_versions parses as dotted integers
+    (including an empty list), since guessing a bump from a versioning
+    scheme this code does not understand would be misleading rather than
+    helpful.
+    """
+    parsed_versions = []
+    for candidate in existing_versions:
+        parts = candidate.split(".")
+        if parts and all(part.isdigit() for part in parts):
+            parsed_versions.append(tuple(int(part) for part in parts))
+    if not parsed_versions:
+        return None
+
+    latest = max(parsed_versions)
+    bumped = (*latest[:-1], latest[-1] + 1)
+    return ".".join(str(part) for part in bumped)
 
 
 def _validate_model_type(workdir: Path, source_model: str) -> None:

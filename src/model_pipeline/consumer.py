@@ -13,10 +13,12 @@ pulling ``transformers``/``torch`` into the test environment.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import model_pipeline.constants as const
 from model_pipeline import crypto, hub, packaging
+from model_pipeline.hub import HubError
 from model_pipeline.manifest import (
     Manifest,
     deserialize_manifest,
@@ -59,7 +61,10 @@ def _fetch_and_check_manifest(repo_id: str, version: str, expected_key_id: str) 
     cost of downloading and attempting to decrypt with a key that is already
     known to be the wrong one.
     """
-    manifest_bytes = hub.download_manifest(repo_id, version)
+    try:
+        manifest_bytes = hub.download_manifest(repo_id, version)
+    except HubError as exc:
+        raise ConsumerError(str(exc)) from exc
     artifact_manifest = deserialize_manifest(manifest_bytes)
     actual_key_id = artifact_manifest["encryption"]["key_id"]
     if actual_key_id != expected_key_id:
@@ -81,6 +86,44 @@ def _download_and_decrypt(
         raise ConsumerError(f"decryption failed, likely the wrong key: {exc}") from exc
     verify_plaintext_sha256(artifact_manifest, plaintext_tar)
     return plaintext_tar
+
+
+def resolve_consume_version(repo_id: str, version: str, *, interactive: bool) -> str:
+    """Return a version confirmed to be published under repo_id.
+
+    Looks up the versions already published under repo_id. If version is
+    among them, it is returned unchanged. If it is not, and interactive is
+    True, prompts on the terminal for one of the published versions,
+    looping until a published one is entered. If interactive is False --
+    e.g. running unattended inside a Kubernetes Pod, or from
+    scripts/demo.sh's preflight check -- raises ConsumerError describing
+    the mismatch instead of blocking on input that will never arrive.
+    """
+    published_versions = hub.list_versions(repo_id)
+    if version in published_versions:
+        return version
+    if not published_versions:
+        raise ConsumerError(f"{repo_id!r} has no published artifact versions")
+
+    message = (
+        f"version {version!r} is not published in {repo_id!r}; "
+        f"published versions: {', '.join(published_versions)}"
+    )
+    if not interactive:
+        raise ConsumerError(message)
+
+    print(message, file=sys.stderr)
+    latest = published_versions[-1]
+    while True:
+        print(f"Enter a published version to consume [{latest}]: ", end="", file=sys.stderr)
+        sys.stderr.flush()
+        candidate = input().strip() or latest
+        if candidate in published_versions:
+            return candidate
+        print(
+            f"version {candidate!r} is not published in {repo_id!r}; try another",
+            file=sys.stderr,
+        )
 
 
 def load_and_predict(workdir: Path, task_hint: str) -> str:

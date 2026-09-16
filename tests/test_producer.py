@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import tests.constants as test_const
 
 from model_pipeline import manifest as manifest_module
 from model_pipeline import producer
-from model_pipeline.producer import ProducerError, produce
+from model_pipeline.producer import ProducerError, produce, resolve_produce_version
 
 FAKE_TOKEN = "hf_super-secret-token"  # noqa: S105
 SOURCE_MODEL = "prajjwal1/bert-tiny"
@@ -163,7 +164,7 @@ def test_produce_rejects_a_source_model_with_invalid_json_config(fake_hub: FakeH
 
 
 def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> None:
-    """produce must reject publishing a version that already exists in the target repo."""
+    """produce must reject publishing a version that already exists, suggesting the next one."""
     produce(
         source_model=SOURCE_MODEL,
         target_repo=TARGET_REPO,
@@ -173,7 +174,7 @@ def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> 
         chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
     )
 
-    with pytest.raises(ProducerError):
+    with pytest.raises(ProducerError, match=r"already exists.*next available version.*1\.0\.1"):
         produce(
             source_model=SOURCE_MODEL,
             target_repo=TARGET_REPO,
@@ -182,3 +183,54 @@ def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> 
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
+
+
+def test_produce_error_omits_a_suggestion_when_no_version_is_dotted_integers(
+    fake_hub: FakeHub,
+) -> None:
+    """produce's error must not guess a next version when existing ones aren't dotted integers."""
+    (fake_hub.remote_dir / TARGET_REPO / "unstable").mkdir(parents=True)
+
+    with pytest.raises(ProducerError) as exc_info:
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="unstable",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+    assert "next available version" not in str(exc_info.value)
+
+
+def test_resolve_produce_version_returns_a_free_version_unchanged(fake_hub: FakeHub) -> None:
+    """resolve_produce_version must return version as-is when it is not already published."""
+    assert resolve_produce_version(TARGET_REPO, "1.0.0", interactive=False) == "1.0.0"
+    assert resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True) == "1.0.0"
+
+
+def test_resolve_produce_version_raises_non_interactively_on_conflict(fake_hub: FakeHub) -> None:
+    """resolve_produce_version must raise ProducerError, not prompt, when interactive is False."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.0").mkdir(parents=True)
+
+    with pytest.raises(ProducerError, match=r"already exists.*next available version.*1\.0\.1"):
+        resolve_produce_version(TARGET_REPO, "1.0.0", interactive=False)
+
+
+def test_resolve_produce_version_prompts_until_a_free_version_is_given(fake_hub: FakeHub) -> None:
+    """resolve_produce_version must reprompt on the terminal until a free version is entered."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.0").mkdir(parents=True)
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.1").mkdir(parents=True)
+
+    with patch("builtins.input", side_effect=["1.0.1", "1.0.2"]):
+        resolved = resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True)
+    assert resolved == "1.0.2"
+
+
+def test_resolve_produce_version_prompt_blank_accepts_the_suggestion(fake_hub: FakeHub) -> None:
+    """resolve_produce_version must use the suggested next version when the prompt is left blank."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.0").mkdir(parents=True)
+
+    with patch("builtins.input", return_value=""):
+        resolved = resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True)
+    assert resolved == "1.0.1"
