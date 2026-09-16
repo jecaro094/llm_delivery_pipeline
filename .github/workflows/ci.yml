@@ -78,12 +78,21 @@ jobs:
       - uses: helm/kind-action@v1
         with:
           cluster_name: ci
-      # Server-side dry-run: the manifests are sent to a real API server
-      # (schema, enum values, immutability rules) without persisting any
-      # object, so this needs neither the Secrets nor the container images
-      # the real workloads depend on. It only catches structural mistakes
-      # in the manifests, not whether the pipeline behaves correctly at
-      # runtime — that is what the local minikube demo in README.md is for.
+      # The namespace and the ServiceAccount are created for real first: a
+      # server-side dry-run does not persist them, so validating the
+      # dependent resources below in the same dry-run would otherwise fail
+      # with spurious "namespace not found" / "serviceaccount not found"
+      # errors (the latter is enforced by the ServiceAccount admission
+      # controller when the consumer Pod is validated).
+      - run: kubectl apply -f k8s/namespace.yaml
+      - run: kubectl apply -f k8s/serviceaccount.yaml
+      # Server-side dry-run: the remaining manifests are sent to a real API
+      # server (schema, enum values, immutability rules) without persisting
+      # any object, so this needs neither the Secrets nor the container
+      # images the real workloads depend on. It only catches structural
+      # mistakes in the manifests, not whether the pipeline behaves
+      # correctly at runtime — that is what the local minikube demo in
+      # README.md is for.
       - run: kubectl apply -k k8s/ --dry-run=server
 
   build:
