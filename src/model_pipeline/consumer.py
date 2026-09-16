@@ -139,6 +139,7 @@ def load_and_predict(workdir: Path, task_hint: str) -> str:
     from transformers import pipeline
 
     fill_mask = pipeline("fill-mask", model=str(workdir))
+    assert fill_mask.tokenizer is not None  # noqa: S101 -- always set for a fill-mask pipeline
     mask_token = fill_mask.tokenizer.mask_token
     predictions = fill_mask(f"Paris is the {mask_token} of France.")
     return ", ".join(

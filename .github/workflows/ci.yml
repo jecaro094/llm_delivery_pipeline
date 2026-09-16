@@ -7,8 +7,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  # Cryptography's crypto.py must not regress below its current coverage level.
-  CRYPTO_COVERAGE_THRESHOLD: "90"
+  # The whole package is covered at 100%; any regression fails the build.
+  COVERAGE_THRESHOLD: "100"
 
 jobs:
   quality:
@@ -45,7 +45,7 @@ jobs:
       # root is on sys.path, which `python -m` guarantees and a bare
       # `pytest` invocation does not.
       - run: python -m pytest --cov=model_pipeline --cov-report=term-missing
-      - run: coverage report --include="*/crypto.py" --fail-under=${{ env.CRYPTO_COVERAGE_THRESHOLD }}
+      - run: coverage report --fail-under=${{ env.COVERAGE_THRESHOLD }}
 
   security:
     name: Security

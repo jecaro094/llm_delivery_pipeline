@@ -363,6 +363,40 @@ def test_consume_runs_the_smoke_test_when_requested(
     assert "'capital' (0.988)" in capsys.readouterr().out
 
 
+def test_consume_reports_a_smoke_test_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """consume --smoke-test must report a ConsumerError from load_and_predict and exit 1."""
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    fake_manifest = _fake_manifest()
+    workdir = tmp_path / "model"
+
+    with (
+        patch("model_pipeline.cli.consume", return_value=fake_manifest),
+        patch(
+            "model_pipeline.cli.load_and_predict",
+            side_effect=ConsumerError("failed to load the model"),
+        ),
+    ):
+        exit_code = cli.main(
+            [
+                "consume",
+                "--repo",
+                "me/repo",
+                "--version",
+                "1.0.0",
+                "--workdir",
+                str(workdir),
+                "--smoke-test",
+            ]
+        )
+
+    assert exit_code == 1
+    assert "smoke test failed" in capsys.readouterr().err
+
+
 def test_consume_check_only_prints_the_version_and_does_not_download(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:

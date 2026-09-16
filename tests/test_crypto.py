@@ -173,6 +173,120 @@ def test_decrypt_raises_on_empty_container() -> None:
         crypto.decrypt(b"", test_const.TEST_MASTER_KEY)
 
 
+def test_encrypt_rejects_non_positive_chunk_size() -> None:
+    """A zero or negative chunk_size must be rejected before any encryption work happens."""
+    with pytest.raises(ValueError):
+        crypto.encrypt(b"data", test_const.TEST_MASTER_KEY, chunk_size=0)
+
+
+def test_decrypt_rejects_unsupported_outer_format_version() -> None:
+    """A container whose format-version byte does not match the supported version is rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = bytearray(
+        crypto.encrypt(
+            plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+        )
+    )
+    container[len(const.MAGIC)] = const.FORMAT_VERSION + 1
+    with pytest.raises(crypto.DecryptionError, match="unsupported format version"):
+        crypto.decrypt(bytes(container), test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_truncated_header() -> None:
+    """A container cut off in the middle of its declared header must be rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_start = len(const.MAGIC) + 1 + const.HEADER_LEN_SIZE
+    truncated = container[: header_start + 1]
+    with pytest.raises(crypto.DecryptionError, match="truncated header"):
+        crypto.decrypt(truncated, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_invalid_header_json() -> None:
+    """A header that is not valid JSON must be rejected with a clear error, not crash."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_len = _read_header_len(container)
+    header_start = len(const.MAGIC) + 1 + const.HEADER_LEN_SIZE
+    broken_header = b"{not json" + b" " * (header_len - len(b"{not json"))
+    corrupted = container[:header_start] + broken_header + container[header_start + header_len :]
+    with pytest.raises(crypto.DecryptionError, match="invalid header JSON"):
+        crypto.decrypt(corrupted, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_header_missing_salt_field() -> None:
+    """A syntactically valid header JSON missing the required 'salt' field must be rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_len = _read_header_len(container)
+    header_start = len(const.MAGIC) + 1 + const.HEADER_LEN_SIZE
+    new_header = json.dumps({"format_version": const.FORMAT_VERSION}).encode("utf-8")
+    assert len(new_header) <= header_len
+    padded = new_header + b" " * (header_len - len(new_header))
+    corrupted = container[:header_start] + padded + container[header_start + header_len :]
+    with pytest.raises(crypto.DecryptionError, match="invalid or missing header fields"):
+        crypto.decrypt(corrupted, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_unsupported_header_format_version() -> None:
+    """A header whose JSON 'format_version' field disagrees with the outer magic is rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_len = _read_header_len(container)
+    header_start = len(const.MAGIC) + 1 + const.HEADER_LEN_SIZE
+    original_header = json.loads(container[header_start : header_start + header_len])
+    original_header["format_version"] = const.FORMAT_VERSION + 1
+    new_header = json.dumps(original_header, sort_keys=True).encode("utf-8")
+    assert len(new_header) <= header_len
+    padded = new_header + b" " * (header_len - len(new_header))
+    corrupted = container[:header_start] + padded + container[header_start + header_len :]
+    with pytest.raises(crypto.DecryptionError, match="unsupported header format_version"):
+        crypto.decrypt(corrupted, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_truncated_chunk_length_prefix() -> None:
+    """A container cut off inside a chunk's length prefix must be rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_end = _header_end_offset(container)
+    truncated = container[: header_end + const.CHUNK_LEN_SIZE - 1]
+    with pytest.raises(crypto.DecryptionError, match="truncated chunk length prefix"):
+        crypto.decrypt(truncated, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_truncated_chunk_data() -> None:
+    """A container whose declared chunk length exceeds the remaining bytes must be rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_end = _header_end_offset(container)
+    truncated = container[: header_end + const.CHUNK_LEN_SIZE + 1]
+    with pytest.raises(crypto.DecryptionError, match="truncated chunk data"):
+        crypto.decrypt(truncated, test_const.TEST_MASTER_KEY)
+
+
+def test_decrypt_rejects_container_with_no_chunks() -> None:
+    """A structurally valid container with zero chunks after the header must be rejected."""
+    plaintext = b"g" * test_const.SMALL_TEST_CHUNK_SIZE
+    container = crypto.encrypt(
+        plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
+    )
+    header_end = _header_end_offset(container)
+    with pytest.raises(crypto.DecryptionError, match="no chunks"):
+        crypto.decrypt(container[:header_end], test_const.TEST_MASTER_KEY)
+
+
 def test_decrypt_low_level_matches_aesgcm_reference() -> None:
     """The derived file_key/nonce/AAD scheme must be consistent with direct AESGCM usage."""
     plaintext = b"h" * test_const.SMALL_TEST_CHUNK_SIZE

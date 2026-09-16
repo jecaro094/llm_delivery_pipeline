@@ -76,6 +76,20 @@ def test_unpack_rejects_symlink_escaping_destination_via_relative_path(tmp_path:
         packaging.unpack_archive(archive, destination)
 
 
+def test_unpack_rejects_device_file(tmp_path: Path) -> None:
+    """A tar member describing a character or block device must be rejected."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        device_info = tarfile.TarInfo(name="evil-device")
+        device_info.type = tarfile.CHRTYPE
+        tar.addfile(device_info)
+    archive = buffer.getvalue()
+
+    destination = tmp_path / "safe-dest"
+    with pytest.raises(packaging.PackagingError, match="device file"):
+        packaging.unpack_archive(archive, destination)
+
+
 def _build_malicious_tar(*, name: str, content: bytes) -> bytes:
     """Build an in-memory tar archive containing a single member with an arbitrary raw name."""
     buffer = io.BytesIO()

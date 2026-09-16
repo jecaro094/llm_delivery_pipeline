@@ -234,3 +234,14 @@ def test_resolve_produce_version_prompt_blank_accepts_the_suggestion(fake_hub: F
     with patch("builtins.input", return_value=""):
         resolved = resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True)
     assert resolved == "1.0.1"
+
+
+def test_resolve_produce_version_reprompts_on_blank_input_without_a_suggestion(
+    fake_hub: FakeHub,
+) -> None:
+    """With no bumpable suggestion, a blank prompt must reprompt instead of an empty version."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "abc").mkdir(parents=True)
+
+    with patch("builtins.input", side_effect=["", "def"]):
+        resolved = resolve_produce_version(TARGET_REPO, "abc", interactive=True)
+    assert resolved == "def"
