@@ -50,11 +50,31 @@ HKDF_INFO = b"model-pipeline/v1"
 ALGORITHM_LABEL = "AES-256-GCM"
 KDF_LABEL = "HKDF-SHA256"
 
+# --- Signing ---
+
+# Filename of the detached signature published alongside manifest.json.
+SIGNATURE_FILENAME = "manifest.json.sig"
+
+# Recorded in the manifest's signature section so a consumer can detect an
+# algorithm mismatch before attempting verification.
+SIGNATURE_ALGORITHM_LABEL = "Ed25519"
+
+# Raw Ed25519 signature length, in bytes.
+SIGNATURE_SIZE = 64
+
+# Name of the Kubernetes Secret expected to hold the private signing key.
+DEFAULT_SIGNING_KEY_ID = "model-signing-key"
+
+# Name of the Kubernetes ConfigMap expected to hold the public verification key.
+DEFAULT_PUBLIC_KEY_ID = "model-signing-public-key"
+
 # --- Manifest ---
 
 # Schema version of the published manifest.json, independent of the
-# container's own format_version.
-MANIFEST_VERSION = "1.0"
+# container's own format_version. Bumped to 2.0 because the signature
+# section is a required addition, not an optional one: a consumer must
+# reject an older, unsigned manifest rather than silently skip verification.
+MANIFEST_VERSION = "2.0"
 
 # --- Hugging Face Hub layout ---
 
