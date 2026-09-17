@@ -57,6 +57,20 @@ class ProducerInfo(TypedDict):
     tool_version: str
 
 
+class SignatureInfo(TypedDict):
+    """Labels describing how the manifest itself was signed, without the signature bytes.
+
+    The signature cannot live in this section: the manifest is the signed
+    payload, so a field containing its own signature would be circular. The
+    signature is published as a separate, detached file instead (see
+    ``constants.SIGNATURE_FILENAME``).
+    """
+
+    algorithm: str
+    public_key_sha256: str
+    signature_path: str
+
+
 class Manifest(TypedDict):
     """Full manifest published next to an encrypted artifact."""
 
@@ -65,6 +79,7 @@ class Manifest(TypedDict):
     model: ModelInfo
     artifact: ArtifactInfo
     encryption: EncryptionInfo
+    signature: SignatureInfo
     producer: ProducerInfo
 
 
@@ -79,6 +94,7 @@ def build_manifest(
     model: ModelInfo,
     artifact: ArtifactInfo,
     encryption: EncryptionInfo,
+    signature: SignatureInfo,
     producer: ProducerInfo,
 ) -> Manifest:
     """Assemble a manifest from its sections, stamping the current manifest schema version."""
@@ -88,6 +104,7 @@ def build_manifest(
         model=model,
         artifact=artifact,
         encryption=encryption,
+        signature=signature,
         producer=producer,
     )
 

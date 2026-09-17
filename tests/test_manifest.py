@@ -34,6 +34,11 @@ def _build_sample_manifest(artifact_bytes: bytes, plaintext_bytes: bytes) -> man
             format_version=1,
             key_id="model-encryption-key",
         ),
+        signature=manifest.SignatureInfo(
+            algorithm="Ed25519",
+            public_key_sha256="ab" * 32,
+            signature_path="versions/1.0.0/manifest.json.sig",
+        ),
         producer=manifest.ProducerInfo(tool="model_pipeline", tool_version="0.1.0"),
     )
 
@@ -85,11 +90,42 @@ def test_serialized_manifest_never_contains_the_encryption_key() -> None:
     assert key_b64 not in serialized.decode("utf-8")
 
 
+def test_manifest_has_a_well_formed_signature_section_with_no_signature_bytes() -> None:
+    """The signature section carries only labels: no private key and no signature bytes.
+
+    The manifest is the payload a signature covers, so a field containing
+    its own signature would be circular; the signature is published as a
+    separate, detached file instead.
+    """
+    sample_manifest = _build_sample_manifest(b"ciphertext-bytes", b"plaintext-bytes")
+    serialized = manifest.serialize_manifest(sample_manifest)
+
+    assert sample_manifest["signature"]["algorithm"] == "Ed25519"
+    assert len(sample_manifest["signature"]["public_key_sha256"]) == 64
+    assert test_const.TEST_SIGNING_PRIVATE_KEY_PEM not in serialized
+    assert test_const.TEST_SIGNING_PUBLIC_KEY_PEM not in serialized
+
+
 def test_deserialize_rejects_unknown_manifest_version() -> None:
     """A manifest with an unrecognized manifest_version must be rejected, not silently accepted."""
     sample_manifest = _build_sample_manifest(b"ciphertext-bytes", b"plaintext-bytes")
     tampered = dict(sample_manifest)
     tampered["manifest_version"] = "99.0"
+    tampered_bytes = manifest.serialize_manifest(tampered)  # type: ignore[arg-type]
+
+    with pytest.raises(manifest.ManifestError):
+        manifest.deserialize_manifest(tampered_bytes)
+
+
+def test_deserialize_rejects_the_pre_signing_manifest_version() -> None:
+    """A Layer 1 manifest (manifest_version 1.0, no signature section) must be rejected.
+
+    A signing-aware consumer must refuse to fall back to an unsigned
+    manifest rather than silently skip verification.
+    """
+    sample_manifest = _build_sample_manifest(b"ciphertext-bytes", b"plaintext-bytes")
+    tampered = dict(sample_manifest)
+    tampered["manifest_version"] = "1.0"
     tampered_bytes = manifest.serialize_manifest(tampered)  # type: ignore[arg-type]
 
     with pytest.raises(manifest.ManifestError):
