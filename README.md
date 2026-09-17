@@ -48,11 +48,12 @@ upload happens, with an error naming the missing key.
 ## Testing this locally
 
 There are three independent ways to exercise this repository, covering progressively more of the
-architecture. Each is self-contained; pick the one that matches the dependencies you're willing to
-install.
+architecture, plus a zero-setup fast path against a pinned demo artifact for anyone without a
+Hugging Face account or short on time. Each is self-contained; pick the one that matches the
+dependencies you're willing to install.
 
 If you're driving this repository through Claude Code, the [`test-locally`](.claude/skills/test-locally/SKILL.md)
-skill runs any of the three for you — including the full verification sequence after Option 3 —
+skill runs any of them for you — including the full verification sequence after Option 3 —
 without you having to copy commands by hand: just ask it to run the repo locally, or invoke it
 directly with `/test-locally`.
 
@@ -67,6 +68,30 @@ publish yourself — see [`demo/README.md`](demo/README.md).
 | [Option 1](#option-1--run-the-test-suite-only) | The code is correct (crypto round-trip, tampering detection, mocked HF/producer/consumer logic) | Python only | 1 min |
 | [Option 2](#option-2--run-the-pipeline-directly-without-kubernetes) | The pipeline works end-to-end against real Hugging Face Hub | Python + HF write token | 3-5 min |
 | [Option 3](#option-3--full-end-to-end-demo-on-kubernetes) | The full architecture works, including the Secret mount and in-memory decryption | Docker + minikube + HF write token | 8-10 min |
+
+### Fast path — pinned demo artifact (no account, no token)
+
+Runs the real consumer against a real, already-published artifact using a demo-only encryption key
+committed to the repository on purpose — see [`demo/README.md`](demo/README.md) for why that
+exception is safe. This proves the same thing Option 2's consume step proves (download, decryption,
+model loading) against a real published artifact, without the producer side or the Secret/Pod
+machinery from Option 3.
+
+**Dependencies needed:** Python 3.12+ only. No Docker, no minikube, no Hugging Face account or
+token, and nothing to publish.
+
+```bash
+python3.12 -m venv .venv   # skip if a .venv already exists
+source .venv/bin/activate
+pip install -e ".[consumer,dev]"
+
+ENCRYPTION_KEY_FILE=demo/encryption-key \
+  python -m model_pipeline consume \
+    --repo jecaro/bert-tiny-encrypted \
+    --version demo \
+    --workdir /tmp/model \
+    --smoke-test
+```
 
 ### Option 1 — Run the test suite only
 
