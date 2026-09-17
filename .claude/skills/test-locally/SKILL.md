@@ -17,10 +17,10 @@ this file.
 Never guess which option to run. Ask the user which one they want, using this framing:
 
 - **Option 1 — test suite only.** Fastest, no external dependencies beyond Python. Proves the code
-  (including the cryptographic core) is correct, not that the live pipeline works.
+  (including the cryptographic core) is correct, not that the live pipeline works. ~1 min.
 - **Option 2 — CLI without Kubernetes.** Runs the real producer/consumer against the real Hugging
   Face Hub. Needs a Hugging Face **write** token (`HF_TOKEN`). Proves the pipeline logic works
-  end-to-end, but skips the Secret mount and in-memory decryption.
+  end-to-end, but skips the Secret mount and in-memory decryption. ~3-5 min.
 - **Option 3 — full Kubernetes demo (`scripts/demo.sh`).** Needs Docker, minikube, `kubectl`, and
   the same `HF_TOKEN`. The only option that exercises the actual architecture (Job, Secret, Pod,
   `tmpfs` decryption) described in the README. ~8-10 min.

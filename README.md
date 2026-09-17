@@ -52,11 +52,17 @@ skill runs any of the three for you — including the full verification sequence
 without you having to copy commands by hand: just ask it to run the repo locally, or invoke it
 directly with `/test-locally`.
 
-| | What it proves | What it needs |
-|---|---|---|
-| [Option 1](#option-1--run-the-test-suite-only) | The code is correct (crypto round-trip, tampering detection, mocked HF/producer/consumer logic) | Python only |
-| [Option 2](#option-2--run-the-pipeline-directly-without-kubernetes) | The pipeline works end-to-end against real Hugging Face Hub | Python + HF write token |
-| [Option 3](#option-3--full-end-to-end-demo-on-kubernetes) | The full architecture works, including the Secret mount and in-memory decryption | Docker + minikube + HF write token |
+**Short on time?** [Option 1](#option-1--run-the-test-suite-only) needs nothing but a Python
+virtualenv and already exercises the cryptographic core directly, including the tampering,
+truncation, and reordering tests that back the security claims in this README. To also see the
+real pipeline decrypt a real published artifact — no Hugging Face account, no token, nothing to
+publish yourself — see [`demo/README.md`](demo/README.md).
+
+| | What it proves | What it needs | ~Time |
+|---|---|---|---|
+| [Option 1](#option-1--run-the-test-suite-only) | The code is correct (crypto round-trip, tampering detection, mocked HF/producer/consumer logic) | Python only | 1 min |
+| [Option 2](#option-2--run-the-pipeline-directly-without-kubernetes) | The pipeline works end-to-end against real Hugging Face Hub | Python + HF write token | 3-5 min |
+| [Option 3](#option-3--full-end-to-end-demo-on-kubernetes) | The full architecture works, including the Secret mount and in-memory decryption | Docker + minikube + HF write token | 8-10 min |
 
 ### Option 1 — Run the test suite only
 
