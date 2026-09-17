@@ -82,22 +82,25 @@ def test_list_versions_returns_empty_when_the_repo_does_not_exist() -> None:
     assert versions == []
 
 
-def test_upload_artifact_uploads_both_files_under_the_version_prefix() -> None:
-    """upload_artifact must upload the encrypted artifact and the manifest at the right paths."""
+def test_upload_artifact_uploads_all_three_files_under_the_version_prefix() -> None:
+    """upload_artifact must upload the artifact, signature, and manifest, in that order."""
     with patch("model_pipeline.hub.HfApi") as mock_api_cls:
         hub.upload_artifact(
             "me/bert-tiny-encrypted",
             "1.0.0",
             artifact_bytes=b"ciphertext",
+            signature_bytes=b"sig-bytes",
             manifest_bytes=b"{}",
             token=FAKE_TOKEN,
         )
     upload_calls = mock_api_cls.return_value.upload_file.call_args_list
-    assert len(upload_calls) == 2
+    assert len(upload_calls) == 3
     assert upload_calls[0].kwargs["path_in_repo"] == "versions/1.0.0/model.tar.enc"
     assert upload_calls[0].kwargs["path_or_fileobj"] == b"ciphertext"
-    assert upload_calls[1].kwargs["path_in_repo"] == "versions/1.0.0/manifest.json"
-    assert upload_calls[1].kwargs["path_or_fileobj"] == b"{}"
+    assert upload_calls[1].kwargs["path_in_repo"] == "versions/1.0.0/manifest.json.sig"
+    assert upload_calls[1].kwargs["path_or_fileobj"] == b"sig-bytes"
+    assert upload_calls[2].kwargs["path_in_repo"] == "versions/1.0.0/manifest.json"
+    assert upload_calls[2].kwargs["path_or_fileobj"] == b"{}"
     for call in upload_calls:
         assert call.kwargs["repo_id"] == "me/bert-tiny-encrypted"
         assert call.kwargs["token"] == FAKE_TOKEN
@@ -110,10 +113,37 @@ def test_upload_artifact_never_logs_the_token(caplog: pytest.LogCaptureFixture) 
             "me/bert-tiny-encrypted",
             "1.0.0",
             artifact_bytes=b"ciphertext",
+            signature_bytes=b"sig-bytes",
             manifest_bytes=b"{}",
             token=FAKE_TOKEN,
         )
     assert all(FAKE_TOKEN not in record.getMessage() for record in caplog.records)
+
+
+def test_download_signature_reads_the_downloaded_file(tmp_path: Path) -> None:
+    """download_signature must return the bytes of the file hf_hub_download reports."""
+    local_file = tmp_path / "manifest.json.sig"
+    local_file.write_bytes(b"raw-signature-bytes")
+    with patch("model_pipeline.hub.hf_hub_download", return_value=str(local_file)) as mock_dl:
+        content = hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
+    mock_dl.assert_called_once_with(
+        repo_id="me/bert-tiny-encrypted", filename="versions/1.0.0/manifest.json.sig"
+    )
+    assert content == b"raw-signature-bytes"
+
+
+def test_download_signature_raises_hub_error_for_a_missing_repo_or_version() -> None:
+    """download_signature must translate a not-found Hub error into HubError."""
+    with patch(
+        "model_pipeline.hub.hf_hub_download",
+        side_effect=RepositoryNotFoundError("not found", response=MagicMock()),
+    ):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
+
+    with patch("model_pipeline.hub.hf_hub_download", side_effect=EntryNotFoundError("no entry")):
+        with pytest.raises(hub.HubError):
+            hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
 
 
 def test_download_manifest_reads_the_downloaded_file(tmp_path: Path) -> None:

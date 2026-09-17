@@ -67,14 +67,33 @@ def list_versions(repo_id: str) -> list[str]:
 
 
 def upload_artifact(
-    repo_id: str, version: str, *, artifact_bytes: bytes, manifest_bytes: bytes, token: str
+    repo_id: str,
+    version: str,
+    *,
+    artifact_bytes: bytes,
+    signature_bytes: bytes,
+    manifest_bytes: bytes,
+    token: str,
 ) -> None:
-    """Upload the encrypted artifact and its manifest for version under repo_id."""
+    """Upload the encrypted artifact, its signature, and its manifest for version under repo_id.
+
+    Uploaded in that order deliberately: the manifest is what a consumer
+    reads first and fails closed on if it, or its signature, is missing, so
+    uploading it last means an upload interrupted partway through (these are
+    three separate, non-atomic calls) looks like "version not published
+    yet" rather than "version published but unverifiable".
+    """
     logger.info("uploading artifact: repo=%s version=%s", repo_id, version)
     api = HfApi()
     api.upload_file(
         path_or_fileobj=artifact_bytes,
         path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}",
+        repo_id=repo_id,
+        token=token,
+    )
+    api.upload_file(
+        path_or_fileobj=signature_bytes,
+        path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.SIGNATURE_FILENAME}",
         repo_id=repo_id,
         token=token,
     )
@@ -103,6 +122,24 @@ def download_manifest(repo_id: str, version: str) -> bytes:
         )
     except (RepositoryNotFoundError, EntryNotFoundError) as exc:
         raise HubError(f"no manifest published for {repo_id!r} version {version!r}") from exc
+    return Path(local_path).read_bytes()
+
+
+def download_signature(repo_id: str, version: str) -> bytes:
+    """Download and return the raw manifest.json.sig bytes published for version under repo_id.
+
+    Raises HubError, exactly like :func:`download_manifest`, when the
+    signature file is missing -- a manifest with no signature published
+    alongside it must abort, not proceed unverified.
+    """
+    logger.info("downloading signature: repo=%s version=%s", repo_id, version)
+    try:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=f"{const.VERSIONS_PREFIX}/{version}/{const.SIGNATURE_FILENAME}",
+        )
+    except (RepositoryNotFoundError, EntryNotFoundError) as exc:
+        raise HubError(f"no signature published for {repo_id!r} version {version!r}") from exc
     return Path(local_path).read_bytes()
 
 

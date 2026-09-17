@@ -16,12 +16,13 @@ import pytest
 import tests.constants as test_const
 
 from model_pipeline import manifest as manifest_module
-from model_pipeline import producer
+from model_pipeline import producer, signing
 from model_pipeline.producer import ProducerError, produce, resolve_produce_version
 
 FAKE_TOKEN = "hf_super-secret-token"  # noqa: S105
 SOURCE_MODEL = "prajjwal1/bert-tiny"
 TARGET_REPO = "me/bert-tiny-encrypted"
+SIGNING_PRIVATE_KEY = signing.load_private_key(test_const.TEST_SIGNING_PRIVATE_KEY_PEM)
 
 
 class FakeHub:
@@ -59,14 +60,16 @@ class FakeHub:
         version: str,
         *,
         artifact_bytes: bytes,
+        signature_bytes: bytes,
         manifest_bytes: bytes,
         token: str,
     ) -> None:
-        """Write the artifact and manifest bytes under the fake remote repo."""
+        """Write the artifact, signature, and manifest bytes under the fake remote repo."""
         self.uploaded_tokens.append(token)
         version_dir = self.remote_dir / repo_id / version
         version_dir.mkdir(parents=True)
         (version_dir / "model.tar.enc").write_bytes(artifact_bytes)
+        (version_dir / "manifest.json.sig").write_bytes(signature_bytes)
         (version_dir / "manifest.json").write_bytes(manifest_bytes)
 
 
@@ -87,6 +90,7 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
         target_repo=TARGET_REPO,
         version="1.0.0",
         master_key=test_const.TEST_MASTER_KEY,
+        signing_private_key=SIGNING_PRIVATE_KEY,
         hf_token=FAKE_TOKEN,
         chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
     )
@@ -115,6 +119,42 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
     assert published_manifest["model"]["source_revision"] == "deadbeef"
 
 
+def test_produce_publishes_three_files_and_the_manifest_is_the_exact_signed_bytes(
+    fake_hub: FakeHub,
+) -> None:
+    """produce must publish artifact, signature, and manifest, and sign the uploaded bytes exactly.
+
+    The invariant that matters is that the manifest bytes verified against
+    the published signature are byte-identical to the manifest bytes
+    published as manifest.json -- never a re-serialization of the same
+    logical content.
+    """
+    from model_pipeline import signing as signing_module
+
+    published_manifest = produce(
+        source_model=SOURCE_MODEL,
+        target_repo=TARGET_REPO,
+        version="1.0.0",
+        master_key=test_const.TEST_MASTER_KEY,
+        signing_private_key=SIGNING_PRIVATE_KEY,
+        hf_token=FAKE_TOKEN,
+        chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+    )
+
+    version_dir = fake_hub.remote_dir / TARGET_REPO / "1.0.0"
+    assert {p.name for p in version_dir.iterdir()} == {
+        "model.tar.enc",
+        "manifest.json.sig",
+        "manifest.json",
+    }
+
+    manifest_bytes = (version_dir / "manifest.json").read_bytes()
+    signature_bytes = (version_dir / "manifest.json.sig").read_bytes()
+    signing_module.verify(manifest_bytes, signature_bytes, SIGNING_PRIVATE_KEY.public_key())
+    expected_fingerprint = signing_module.public_key_fingerprint(SIGNING_PRIVATE_KEY.public_key())
+    assert published_manifest["signature"]["public_key_sha256"] == expected_fingerprint
+
+
 def test_produce_rejects_a_source_model_without_a_model_type(
     fake_hub: FakeHub, tmp_path: Path
 ) -> None:
@@ -127,6 +167,7 @@ def test_produce_rejects_a_source_model_without_a_model_type(
             target_repo=TARGET_REPO,
             version="1.0.0",
             master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
@@ -143,6 +184,7 @@ def test_produce_rejects_a_source_model_without_a_config_file(fake_hub: FakeHub)
             target_repo=TARGET_REPO,
             version="1.0.0",
             master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
@@ -158,6 +200,7 @@ def test_produce_rejects_a_source_model_with_invalid_json_config(fake_hub: FakeH
             target_repo=TARGET_REPO,
             version="1.0.0",
             master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
@@ -170,6 +213,7 @@ def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> 
         target_repo=TARGET_REPO,
         version="1.0.0",
         master_key=test_const.TEST_MASTER_KEY,
+        signing_private_key=SIGNING_PRIVATE_KEY,
         hf_token=FAKE_TOKEN,
         chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
     )
@@ -180,6 +224,7 @@ def test_produce_refuses_to_overwrite_an_existing_version(fake_hub: FakeHub) -> 
             target_repo=TARGET_REPO,
             version="1.0.0",
             master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
@@ -197,6 +242,7 @@ def test_produce_error_omits_a_suggestion_when_no_version_is_dotted_integers(
             target_repo=TARGET_REPO,
             version="unstable",
             master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )

@@ -15,14 +15,17 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 import model_pipeline.constants as const
-from model_pipeline import __version__, crypto, hub, packaging
+from model_pipeline import __version__, crypto, hub, packaging, signing
 from model_pipeline.manifest import (
     ArtifactInfo,
     EncryptionInfo,
     Manifest,
     ModelInfo,
     ProducerInfo,
+    SignatureInfo,
     build_manifest,
     compute_sha256,
     serialize_manifest,
@@ -39,6 +42,7 @@ def produce(
     target_repo: str,
     version: str,
     master_key: bytes,
+    signing_private_key: Ed25519PrivateKey,
     hf_token: str,
     chunk_size: int = const.DEFAULT_CHUNK_SIZE,
     task_hint: str = const.DEFAULT_TASK_HINT,
@@ -85,14 +89,25 @@ def produce(
             format_version=const.FORMAT_VERSION,
             key_id=const.DEFAULT_KEY_ID,
         ),
+        signature=SignatureInfo(
+            algorithm=const.SIGNATURE_ALGORITHM_LABEL,
+            public_key_sha256=signing.public_key_fingerprint(signing_private_key.public_key()),
+            signature_path=f"{const.VERSIONS_PREFIX}/{version}/{const.SIGNATURE_FILENAME}",
+        ),
         producer=ProducerInfo(tool=const.TOOL_NAME, tool_version=__version__),
     )
+
+    # The exact bytes signed are the exact bytes uploaded as manifest.json:
+    # never re-serialize between signing and upload.
+    manifest_bytes = serialize_manifest(artifact_manifest)
+    signature_bytes = signing.sign(manifest_bytes, signing_private_key)
 
     hub.upload_artifact(
         target_repo,
         version,
         artifact_bytes=encrypted_container,
-        manifest_bytes=serialize_manifest(artifact_manifest),
+        signature_bytes=signature_bytes,
+        manifest_bytes=manifest_bytes,
         token=hf_token,
     )
 
