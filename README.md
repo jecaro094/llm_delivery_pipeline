@@ -5,27 +5,39 @@
 > [`layer_2`](https://github.com/jecaro094/llm_delivery_pipeline/tree/layer_2) branch.
 
 A proof of concept for confidential distribution of an LLM/ML model through Kubernetes: a
-**producer** encrypts a small, open Hugging Face model and publishes the ciphertext to the
-Hugging Face Hub, storing the decryption key as a Kubernetes Secret; a **consumer** pod mounts
-that Secret, downloads the ciphertext, decrypts it in memory, and loads the model.
+**producer** encrypts a small, open Hugging Face model, signs the manifest describing it, and
+publishes the ciphertext, manifest, and signature to the Hugging Face Hub, storing the decryption
+key and the signing key as Kubernetes Secrets; a **consumer** pod mounts the decryption key and a
+public verification key from a ConfigMap, verifies the manifest's signature, then downloads,
+decrypts, and loads the model — aborting before any of that if verification fails.
 
 ```text
-producer (Job) --encrypt--> Hugging Face Hub (public, opaque .enc)
-     |                              |
-     v                              v
-model-encryption-key (Secret) --> consumer (Pod) --decrypt--> model loaded
+producer (Job) --encrypt, sign--> Hugging Face Hub (public: .enc + manifest + .sig)
+     |                                          |
+     v                                          v
+model-encryption-key (Secret) --+          consumer (Pod) --verify--> decrypt --> model loaded
+model-signing-key (Secret)      |               ^
+                                 |               |
+                                 +--------- model-signing-public-key (ConfigMap)
 ```
 
-The security property this demonstrates: Hugging Face stores the artifact but can never decrypt
-it. The decryption key never leaves the Kubernetes cluster. See [`docs/architecture.md`](docs/architecture.md)
-for the full data flow and container format, [`docs/decisions.md`](docs/decisions.md) for why each
-choice was made over its alternatives, and [`docs/threat-model.md`](docs/threat-model.md) for what
-this does and does not protect against.
+Two independent security properties: Hugging Face stores the artifact but can never decrypt it —
+the decryption key never leaves the cluster — and Hugging Face (or anyone with write access to the
+repo) can serve arbitrary bytes but cannot make the consumer accept them, because the consumer's
+trust anchor (the public verification key) also never leaves the cluster and never comes from the
+Hub. See [`docs/architecture.md`](docs/architecture.md) for the full data flow, container format,
+and signing scheme, [`docs/decisions.md`](docs/decisions.md) for why each choice was made over its
+alternatives, and [`docs/threat-model.md`](docs/threat-model.md) for what this does and does not
+protect against.
 
-This repository implements only the mandatory layer of the underlying exercise (encrypt, publish,
-mount a key, decrypt, load). Signing the manifest and attestation-gated key release are documented
-as future extensions in [`docs/decisions.md`](docs/decisions.md) and [`docs/threat-model.md`](docs/threat-model.md),
-not implemented.
+This repository implements the mandatory layer of the underlying exercise (encrypt, publish, mount
+a key, decrypt, load) plus its optional signing/verification layer (generate a key pair, sign the
+published manifest, verify it before decrypting, abort on failure). There is deliberately no toggle
+to run the pipeline "without signing" — see [Verifying the Kubernetes demo](#verifying-the-kubernetes-demo-option-3)
+below for how each layer is demonstrated independently, through what its own negative test catches.
+Attestation-gated key release is documented as a future extension in
+[`docs/decisions.md`](docs/decisions.md) and [`docs/threat-model.md`](docs/threat-model.md), not
+implemented.
 
 ## Prerequisites
 
@@ -106,15 +118,27 @@ python3.12 -m venv .venv
 source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -e ".[producer,consumer,dev]"
 
-python -m model_pipeline keygen > .encryption-key   # base64 AES-256 key, local file only
+python -m model_pipeline keygen > .encryption-key           # base64 AES-256 key, local file only
+python -m model_pipeline signing-keygen > .signing-keypair   # Ed25519 PEM pair, both keys printed
 
-HF_TOKEN=<your token> ENCRYPTION_KEY_FILE=.encryption-key \
+# Split the combined output into the two files the flags below expect
+# (the marker lines are what signing-keygen prints before each PEM block).
+sed -n '/BEGIN PRIVATE/,/END PRIVATE/p' .signing-keypair > .signing-key.pem
+sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' .signing-keypair > .signing-public-key.pem
+
+HF_TOKEN=<your token> ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <your-namespace>/bert-tiny-encrypted \
     --version 1.0.0
 
-ENCRYPTION_KEY_FILE=.encryption-key \
+# Verify the signature alone, with no decryption key at all
+python -m model_pipeline verify \
+  --repo <your-namespace>/bert-tiny-encrypted \
+  --version 1.0.0 \
+  --public-key-file .signing-public-key.pem
+
+ENCRYPTION_KEY_FILE=.encryption-key SIGNING_PUBLIC_KEY_FILE=.signing-public-key.pem \
   python -m model_pipeline consume \
     --repo <your-namespace>/bert-tiny-encrypted \
     --version 1.0.0 \
@@ -149,9 +173,11 @@ export HF_TOKEN=<a Hugging Face token with write access>
 ```
 
 `scripts/demo.sh` starts minikube if it isn't running, builds and loads both images, provisions the
-namespace/service account/Secrets, runs the producer Job, and then the consumer Pod, printing both
-sets of logs. By default it targets the repo and version baked into `k8s/producer-job.yaml` and
-`k8s/consumer-pod.yaml` (`jecaro/bert-tiny-encrypted`, version `1.0.5`).
+namespace/service account/Secrets (`model-encryption-key` via `scripts/gen-key.sh`, and
+`model-signing-key` + `model-signing-public-key` via `scripts/gen-signing-key.sh`), runs the
+producer Job, and then the consumer Pod, printing both sets of logs. By default it targets the repo
+and version baked into `k8s/producer-job.yaml` and `k8s/consumer-pod.yaml`
+(`jecaro/bert-tiny-encrypted`, version `1.0.3`).
 
 Since the producer refuses to overwrite an existing version (artifact versions are immutable, see
 decision 7 in `docs/decisions.md`), re-running the script against an already-published version
@@ -162,15 +188,15 @@ target version against the target repo itself before touching the cluster at all
 on the terminal for a different version on a conflict, suggesting the next available one:
 
 ```text
-version '1.0.5' already exists in 'jecaro/bert-tiny-encrypted'; the next available version looks like '1.0.6'
-Enter a different version to publish under jecaro/bert-tiny-encrypted [1.0.6]:
+version '1.0.3' already exists in 'jecaro/bert-tiny-encrypted'; the next available version looks like '1.0.4'
+Enter a different version to publish under jecaro/bert-tiny-encrypted [1.0.4]:
 ```
 
 Press Enter to accept the suggestion, type a different version, or avoid the prompt entirely by
 passing one you already know is free:
 
 ```bash
-./scripts/demo.sh --version 1.0.6
+./scripts/demo.sh --version 1.0.4
 # or target your own repo entirely:
 ./scripts/demo.sh --repo <your-namespace>/bert-tiny-encrypted --version 1.0.0
 ```
@@ -197,20 +223,27 @@ encrypted with, so it has to already exist in the cluster (from a prior full run
 
 ## Verifying the Kubernetes demo (Option 3)
 
+Steps 5 and 8 use `python -m model_pipeline verify`/`signing-keygen` and step 3/4 use
+`huggingface-cli`; both assume a local `pip install -e ".[producer,dev]"` (see Option 1/2 above) —
+none of them need Docker or minikube themselves, only the cluster and repo the full demo already
+populated.
+
 Each step below is independently checkable after running `scripts/demo.sh`. After
-`--producer-only`, only checks 1-3 apply (there is no consumer Pod to inspect yet). After
-`--consumer-only`, checks 2 and 3 don't apply (no producer Job ran in this invocation) — checks 1,
-4, and 5 do, since they only depend on the encryption-key Secret and the consumer Pod, both already
-in place from the prior run that published the targeted artifact.
+`--producer-only`, only checks 1-4 apply (there is no consumer Pod to inspect yet). After
+`--consumer-only`, checks 2-4 don't apply (no producer Job ran in this invocation) — checks 1, 5,
+6, 7, and 8 do, since they only depend on the encryption/signing-public Secret and ConfigMap and the
+consumer Pod, both already in place from the prior run that published the targeted artifact.
 
 ```bash
-# 1. The Secret exists and the key has the right length
+# 1. The Secrets exist and the decryption key has the right length
 # (Kubernetes base64-encodes the stored value, which is itself the
 # base64-encoded key that `keygen` produced, hence the double decode.)
 kubectl -n confidential-models get secret model-encryption-key -o jsonpath='{.data.encryption-key}' \
   | base64 -d | base64 -d | wc -c        # -> 32
+kubectl -n confidential-models get secret model-signing-key -o name          # -> exists
+kubectl -n confidential-models get configmap model-signing-public-key -o name # -> exists
 
-# 2. The producer job completed
+# 2. The producer job completed (encrypted, signed, and published)
 kubectl -n confidential-models logs job/model-producer
 
 # 3. The published artifact is opaque: without the key it is not a model
@@ -218,21 +251,46 @@ huggingface-cli download <namespace>/bert-tiny-encrypted versions/1.0.0/model.ta
 file /tmp/check/versions/1.0.0/model.tar.enc      # -> data
 tar tf /tmp/check/versions/1.0.0/model.tar.enc    # -> fails: not a tar archive
 
-# 4. The consumer decrypted and loaded the model
-kubectl -n confidential-models logs pod/model-consumer
-# -> manifest verified, sha256 OK, model verified and decrypted, smoke test prediction printed
+# 4. The signature is actually published alongside the artifact, and is a raw 64-byte Ed25519 signature
+huggingface-cli download <namespace>/bert-tiny-encrypted versions/1.0.0/manifest.json.sig --local-dir /tmp/check
+wc -c /tmp/check/versions/1.0.0/manifest.json.sig      # -> 64
 
-# 5. Negative test: with the wrong key, the consumer fails loudly
+# 5. The published version verifies against the public key, with no decryption key involved at all
+kubectl -n confidential-models get configmap model-signing-public-key \
+  -o jsonpath='{.data.public-key\.pem}' > /tmp/check-public-key.pem
+python -m model_pipeline verify --repo <namespace>/bert-tiny-encrypted --version 1.0.0 \
+  --public-key-file /tmp/check-public-key.pem      # -> signature OK, key fingerprint <hex>
+
+# 6. The consumer verified the signature, then decrypted and loaded the model
+kubectl -n confidential-models logs pod/model-consumer
+# -> signature OK, manifest verified, sha256 OK, model verified and decrypted, smoke test prediction printed
+
+# 7. NEGATIVE TEST: with the wrong decryption key, the consumer fails loudly (Layer 1's guarantee)
 kubectl -n confidential-models delete secret model-encryption-key
 kubectl -n confidential-models create secret generic model-encryption-key \
   --from-literal=encryption-key="$(openssl rand -base64 32)"
 kubectl -n confidential-models delete pod model-consumer --ignore-not-found
 kubectl apply -f k8s/consumer-pod.yaml
 kubectl -n confidential-models logs pod/model-consumer   # -> authentication error, non-zero exit
+
+# 8. NEGATIVE TEST: with the wrong public key, the consumer never even reaches decryption (Layer 2's
+# guarantee) -- re-run scripts/gen-signing-key.sh first to restore the real Secret/ConfigMap pair,
+# then swap only the ConfigMap for an unrelated key:
+python -m model_pipeline signing-keygen | sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' > /tmp/unrelated-public-key.pem
+kubectl -n confidential-models delete configmap model-signing-public-key
+kubectl -n confidential-models create configmap model-signing-public-key \
+  --from-file=public-key.pem=/tmp/unrelated-public-key.pem
+kubectl -n confidential-models delete pod model-consumer --ignore-not-found
+kubectl apply -f k8s/consumer-pod.yaml
+kubectl -n confidential-models logs pod/model-consumer
+# -> signature verification failed; aborting, non-zero exit, and NO artifact download in the logs
 ```
 
-Step 5 is what actually demonstrates the encryption is not decorative: garbage or a mismatched key
-never produces a silently wrong model, it fails authentication.
+Steps 7 and 8 are what actually demonstrate each layer is not decorative, and deliberately have the
+same shape: swap one mounted piece of key material, re-run, watch it fail loudly. Step 7 shows
+encryption catches a wrong decryption key. Step 8 shows signing catches an untrusted publisher —
+and the absence of an artifact-download log line there is what proves verification runs *before*
+decryption, not just that it runs at all.
 
 ## Design decisions
 
@@ -244,20 +302,20 @@ publishes anything — is recorded with its rejected alternatives and reasoning 
 ## What this does not cover
 
 [`docs/threat-model.md`](docs/threat-model.md) lists what is and is not protected: in short, this
-protects the model at rest on Hugging Face and in transit, and detects tampering, but a cluster
-administrator can still read the Secret, and nothing here proves who published an artifact or
-attests to the node the key is released to.
+protects the model at rest on Hugging Face and in transit, detects tampering, and proves who
+published an artifact — but a cluster administrator can still read either Secret or replace the
+trust anchor ConfigMap outright, and nothing here attests to the node either key is released to.
 
 ## Extending toward stronger guarantees
 
-- **Manifest signing**: the manifest already commits to the artifact's hash, so a single asymmetric
-  signature (Ed25519 or Sigstore/cosign) over the manifest, verified by the consumer before
-  decrypting, would give authenticity of origin without changing the container format.
-- **Attestation-gated key release**: replacing the Kubernetes Secret mount with a request to a
-  Confidential Containers key broker (Trustee KBS) would mean the key is only released to a node
-  that first proves its integrity. The extension point is `model_pipeline.keys`: swapping "read a
-  file" for "request the resource from the local confidential data hub" leaves the rest of the
-  pipeline untouched.
+- **Attestation-gated key release**: replacing the Kubernetes Secret/ConfigMap mounts with a request
+  to a Confidential Containers key broker (Trustee KBS) would mean key material is only released to
+  a node that first proves its integrity. The extension point is `model_pipeline.keys`: swapping
+  "read a file" for "request the resource from the local confidential data hub" leaves the rest of
+  the pipeline, including the signing and verification step, untouched: signature verification never
+  depends on how the decryption key is obtained (see decisions 17-18 in
+  [`docs/decisions.md`](docs/decisions.md)), so this layer was deliberately kept independent of how
+  either key is delivered.
 
-Both are discussed in more detail, including why they were left out of this PoC, in
+Discussed in more detail, including why it was left out of this PoC, in
 [`docs/decisions.md`](docs/decisions.md) and [`docs/threat-model.md`](docs/threat-model.md).

@@ -19,8 +19,9 @@ Never guess which option to run. Ask the user which one they want, using this fr
 - **Option 1 — test suite only.** Fastest, no external dependencies beyond Python. Proves the code
   (including the cryptographic core) is correct, not that the live pipeline works. ~1 min.
 - **Option 2 — CLI without Kubernetes.** Runs the real producer/consumer against the real Hugging
-  Face Hub. Needs a Hugging Face **write** token (`HF_TOKEN`). Proves the pipeline logic works
-  end-to-end, but skips the Secret mount and in-memory decryption. ~3-5 min.
+  Face Hub, including signing the manifest and verifying it before decrypting. Needs a Hugging Face
+  **write** token (`HF_TOKEN`). Proves the pipeline logic works end-to-end, but skips the Secret
+  mount and in-memory decryption. ~3-5 min.
 - **Option 3 — full Kubernetes demo (`scripts/demo.sh`).** Needs Docker, minikube, `kubectl`, and
   the same `HF_TOKEN`. The only option that exercises the actual architecture (Job, Secret, Pod,
   `tmpfs` decryption) described in the README. ~8-10 min.
@@ -92,14 +93,22 @@ source .venv/bin/activate
 pip install -e ".[producer,consumer,dev]"
 
 python -m model_pipeline keygen > .encryption-key
+python -m model_pipeline signing-keygen > .signing-keypair
+sed -n '/BEGIN PRIVATE/,/END PRIVATE/p' .signing-keypair > .signing-key.pem
+sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' .signing-keypair > .signing-public-key.pem
 
-HF_TOKEN=<token> ENCRYPTION_KEY_FILE=.encryption-key \
+HF_TOKEN=<token> ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <namespace>/bert-tiny-encrypted \
     --version <version>
 
-ENCRYPTION_KEY_FILE=.encryption-key \
+python -m model_pipeline verify \
+  --repo <namespace>/bert-tiny-encrypted \
+  --version <version> \
+  --public-key-file .signing-public-key.pem
+
+ENCRYPTION_KEY_FILE=.encryption-key SIGNING_PUBLIC_KEY_FILE=.signing-public-key.pem \
   python -m model_pipeline consume \
     --repo <namespace>/bert-tiny-encrypted \
     --version <version> \
@@ -137,18 +146,21 @@ requirements (`--consumer-only` needs the encryption key already in the cluster 
 and skips `HF_TOKEN`).
 
 After a full (no-flag) run, run the full verification sequence from the README's ["Verifying the
-Kubernetes demo"](../../../README.md#verifying-the-kubernetes-demo-option-3) section — all five
-checks, not a subset, since the last one (swapping in a wrong key and confirming the consumer fails
-authentication loudly) is what actually demonstrates the encryption is doing something, not just
-that the happy path runs. After `--producer-only`, only checks 1-3 apply (no consumer Pod ran).
-After `--consumer-only`, only checks 1, 4, and 5 apply (no producer Job ran in that invocation).
+Kubernetes demo"](../../../README.md#verifying-the-kubernetes-demo-option-3) section — all eight
+checks, not a subset, since the two negative tests (7: swapping in a wrong decryption key; 8:
+swapping in a wrong signing public key) are what actually demonstrate encryption and signing are
+each doing something, not just that the happy path runs. After `--producer-only`, only checks 1-4
+apply (no consumer Pod ran). After `--consumer-only`, only checks 1, 5, 6, 7, and 8 apply (no
+producer Job ran in that invocation).
 
 ```bash
-# 1. Secret exists with a 32-byte key
+# 1. Secrets/ConfigMap exist, decryption key is 32 bytes
 kubectl -n confidential-models get secret model-encryption-key -o jsonpath='{.data.encryption-key}' \
   | base64 -d | base64 -d | wc -c        # -> 32
+kubectl -n confidential-models get secret model-signing-key -o name
+kubectl -n confidential-models get configmap model-signing-public-key -o name
 
-# 2. Producer job completed
+# 2. Producer job completed (encrypted, signed, and published)
 kubectl -n confidential-models logs job/model-producer
 
 # 3. Published artifact is opaque without the key
@@ -156,22 +168,43 @@ huggingface-cli download <namespace>/bert-tiny-encrypted versions/<version>/mode
 file /tmp/check/versions/<version>/model.tar.enc      # -> data
 tar tf /tmp/check/versions/<version>/model.tar.enc    # -> fails: not a tar archive
 
-# 4. Consumer decrypted and loaded the model
-kubectl -n confidential-models logs pod/model-consumer
-# -> manifest verified, sha256 OK, model verified and decrypted, smoke test prediction printed
+# 4. Signature is published, 64 raw bytes
+huggingface-cli download <namespace>/bert-tiny-encrypted versions/<version>/manifest.json.sig --local-dir /tmp/check
+wc -c /tmp/check/versions/<version>/manifest.json.sig      # -> 64
 
-# 5. Negative test: wrong key fails loudly
+# 5. Signature verifies against the public key, no decryption key involved
+kubectl -n confidential-models get configmap model-signing-public-key \
+  -o jsonpath='{.data.public-key\.pem}' > /tmp/check-public-key.pem
+python -m model_pipeline verify --repo <namespace>/bert-tiny-encrypted --version <version> \
+  --public-key-file /tmp/check-public-key.pem      # -> signature OK, key fingerprint <hex>
+
+# 6. Consumer verified, then decrypted and loaded the model
+kubectl -n confidential-models logs pod/model-consumer
+# -> signature OK, manifest verified, sha256 OK, model verified and decrypted, smoke test prediction printed
+
+# 7. Negative test: wrong decryption key fails loudly
 kubectl -n confidential-models delete secret model-encryption-key
 kubectl -n confidential-models create secret generic model-encryption-key \
   --from-literal=encryption-key="$(openssl rand -base64 32)"
 kubectl -n confidential-models delete pod model-consumer --ignore-not-found
 kubectl apply -f k8s/consumer-pod.yaml
 kubectl -n confidential-models logs pod/model-consumer   # -> authentication error, non-zero exit
+
+# 8. Negative test: wrong public key aborts before decryption (re-run scripts/gen-signing-key.sh
+# first to restore the real Secret/ConfigMap pair before moving to any further check)
+python -m model_pipeline signing-keygen | sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' > /tmp/unrelated-public-key.pem
+kubectl -n confidential-models delete configmap model-signing-public-key
+kubectl -n confidential-models create configmap model-signing-public-key \
+  --from-file=public-key.pem=/tmp/unrelated-public-key.pem
+kubectl -n confidential-models delete pod model-consumer --ignore-not-found
+kubectl apply -f k8s/consumer-pod.yaml
+kubectl -n confidential-models logs pod/model-consumer
+# -> signature verification failed; aborting, non-zero exit, and NO artifact download in the logs
 ```
 
-Report the outcome of each of the five checks to the user, not just whether the demo script itself
-exited cleanly — a green `demo.sh` run with a check 5 that doesn't fail loudly would mean the
-encryption isn't actually protecting anything.
+Report the outcome of each of the eight checks to the user, not just whether the demo script itself
+exited cleanly — a green `demo.sh` run with a check 7 or 8 that doesn't fail loudly would mean
+encryption or signing isn't actually protecting anything.
 
 ## Reporting results
 

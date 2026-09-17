@@ -2,8 +2,8 @@
 
 Each record states the decision, the alternatives considered, and why the decision won. They are
 listed in the order the pipeline touches them: model, cluster, cryptography, workload shape, key
-delivery, artifact versioning, repository visibility, CI scope, image layout, and how the
-application talks to Kubernetes.
+delivery, artifact versioning, repository visibility, CI scope, image layout, how the application
+talks to Kubernetes, and — decisions 12 onward — the signing and verification step layered on top.
 
 ## 1. Source model: `google/bert_uncased_L-2_H-128_A-2`
 
@@ -174,6 +174,122 @@ workloads sets `automountServiceAccountToken: false`.
 **Why**: the same binary runs identically locally, in Docker, in CI, and in Kubernetes, with no
 Kubernetes-specific code path to test separately. Not projecting a service account token into
 either pod also removes a credential neither workload needs.
+
+## 12. Signature algorithm: Ed25519
+
+**Alternatives considered**: RSA-PSS (3072/4096-bit), ECDSA P-256, Sigstore/cosign, GPG detached
+signatures, in-toto/SLSA attestations.
+
+**Decision**: Ed25519, via the `cryptography` package already in the base dependencies.
+
+**Why**: Ed25519 signing is deterministic (RFC 8032) — the per-signature nonce is derived from the
+key and the message, so there is no per-signature randomness to get wrong. That rules out the
+failure mode that has repeatedly broken real-world ECDSA deployments, where a repeated or
+predictable nonce leaks the private key outright; it is the same class of argument behind the
+counter-nonce design in decision 3. Keys are 32 bytes and signatures 64 bytes, negligible next to
+the artifact. It adds no new production dependency: `cryptography` already ships in both images.
+RSA-PSS works but carries more parameters to choose badly (key size, padding, MGF, salt length) and
+much larger keys and signatures.
+
+## 13. Encrypt, then sign — the signature covers ciphertext, never plaintext
+
+**Alternatives considered**: sign the plaintext tar before encrypting; sign both.
+
+**Decision**: the producer signs the manifest only after `crypto.encrypt` has produced the
+ciphertext; nothing plaintext is ever signed.
+
+**Why**: signing the ciphertext lets the consumer reject a forged or tampered artifact without ever
+using the decryption key — an attacker-controlled blob is never fed to the AES-GCM decryptor.
+Signing the plaintext would force decrypting attacker-supplied data before learning whether to
+trust it, inverting the point of this layer. It also keeps verification (the `verify` subcommand)
+runnable by a party holding no decryption key at all.
+
+## 14. The signed payload is the canonical `manifest.json`, not the raw artifact bytes
+
+**Alternatives considered**: sign `model.tar.enc` directly; sign both separately.
+
+**Decision**: `signing.sign()` is called on `serialize_manifest(artifact_manifest)`, and the
+manifest already contains `artifact.sha256` over the encrypted container.
+
+**Why**: one signature over the manifest transitively authenticates the artifact **and** every
+piece of metadata around it (version, source model, source revision, chunk size, format version,
+plaintext hash), for the cost of signing a few hundred bytes instead of streaming the whole
+container twice. Signing only the artifact bytes would leave the manifest itself unsigned and
+therefore substitutable — an attacker could keep a genuine artifact and rewrite its recorded
+provenance. Decision 7 already anticipated this move: the manifest was designed from the start so
+that one signature over it would be enough.
+
+## 15. Detached signature, published as its own file
+
+**Alternatives considered**: a `signature` field inside `manifest.json`; a signature block appended
+to `model.tar.enc`; embedding the signature in the encrypted container header.
+
+**Decision**: `manifest.json.sig`, 64 raw Ed25519 signature bytes, no base64 or PEM encoding.
+
+**Why**: a signature stored inside the document it signs has to define precisely which bytes are
+excluded from the signed payload, and that canonicalization rule is a recurring source of real
+signature-bypass bugs. Detached keeps an unambiguous invariant instead: the bytes published as
+`manifest.json` are byte-for-byte the bytes that were signed (`producer.py` passes the exact
+`manifest_bytes` it signed straight to `hub.upload_artifact`, never a re-serialization). Appending
+the signature to the container, or into its header, would also mix signing concerns into the
+encryption format for no benefit — see decision 16.
+
+## 16. The encrypted container format is unchanged
+
+**Alternatives considered**: bump `crypto.py`'s `FORMAT_VERSION` to carry signature metadata.
+
+**Decision**: `crypto.py`, `MAGIC`, and `FORMAT_VERSION` are untouched by this layer.
+
+**Why**: keeps the two cryptographic concerns strictly separate — `crypto.py` knows nothing about
+signatures, and `signing.py` knows nothing about AES — and every artifact already published under
+format version 1 stays byte-compatible. Only the metadata layer around the container changes.
+
+## 17. The private signing key lives in its own Kubernetes Secret
+
+**Alternatives considered**: adding a second key to the existing `model-encryption-key` Secret.
+
+**Decision**: `model-signing-key`, mounted only by the producer Job, at
+`/etc/model-signing/signing-key.pem`; the consumer Pod has no mount path for it at all.
+
+**Why**: separate secrets mean separate mounts and separate blast radius, the same
+least-privilege-per-workload argument as decision 6. The consumer not having a mount path for the
+signing key is a stronger property than "a permission it declines to use" — the key material simply
+does not exist anywhere the consumer's pod spec can reach. The two keys also have unrelated
+lifecycles and rotation cadences.
+
+## 18. The public verification key reaches the consumer through a Kubernetes ConfigMap, never from the Hugging Face repo
+
+**Alternatives considered**: publishing the public key next to the artifact and having the consumer
+fetch it from the Hub; baking the key into the consumer image; pinning only a fingerprint and
+fetching the key from the Hub.
+
+**Decision**: `model-signing-public-key`, mounted as a file at
+`/etc/model-signing-pub/public-key.pem`, read by `keys.resolve_signing_public_key`.
+
+**Why**: this is the crux of the whole layer. A public key fetched from the same repository that
+serves the artifact is not a trust anchor — an attacker able to rewrite the repo rewrites the key
+and the signature together, and verification degenerates into a self-consistent no-op. The
+verification key must arrive over a channel the attacker of the artifact channel does not control;
+here, that channel is the cluster. Mounting it as a file also reuses the pattern the consumer
+already implements for the decryption key (decision 6), so the application code stays "read a file
+at a path," with no Kubernetes API dependency (decision 11). A ConfigMap rather than a Secret
+because the key is public by definition; storing it as a Secret would misrepresent its sensitivity.
+
+## 19. Fail closed: no unsigned path, no verification bypass flag
+
+**Alternatives considered**: an `--insecure-skip-verify` flag; silently skipping verification when
+no public key is configured; accepting a manifest with no signature section.
+
+**Decision**: `consume()` and `verify_published_version()` always verify; a missing public key,
+missing `manifest.json.sig`, failed verification, or a manifest whose `manifest_version` predates
+signing (`deserialize_manifest` rejects anything other than the current `const.MANIFEST_VERSION`,
+now `"2.0"`) all abort with a non-zero exit and no unsigned fallback path exists in the code.
+
+**Why**: a verification step that can be turned off by a flag or by omitting a file is a downgrade
+attack waiting to happen, and it is the single most common way signature checks fail in practice.
+The practical consequence — artifacts published under the earlier, unsigned manifest schema become
+unconsumable by this consumer — is accepted deliberately: quietly proceeding with no verification
+is a worse failure mode than refusing an old artifact.
 
 ## Configuration resolution via `pydantic-settings`
 
