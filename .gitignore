@@ -22,6 +22,7 @@ htmlcov/
 *.key
 .encryption-key
 *.pem
+.signing-keypair
 k8s/secret.yaml
 
 .DS_Store

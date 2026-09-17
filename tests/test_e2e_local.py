@@ -1,8 +1,9 @@
-"""End-to-end local round trip across packaging, crypto, and manifest, without any network.
+"""End-to-end local round trip across packaging, crypto, signing, and manifest, with no network.
 
-This is the integration test that ties the three modules together: it packs
-a fake model snapshot, encrypts it, builds and verifies a manifest, decrypts
-it back, and confirms the restored files match the originals bit for bit.
+This is the integration test that ties the modules together: it packs a
+fake model snapshot, encrypts it, builds and signs a manifest, verifies the
+signature, decrypts it back, and confirms the restored files match the
+originals bit for bit.
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ from pathlib import Path
 import pytest
 import tests.constants as test_const
 
-from model_pipeline import crypto, keys, manifest, packaging
+from model_pipeline import crypto, keys, manifest, packaging, signing
 
 
 def test_pack_encrypt_manifest_decrypt_verify_round_trip(
     fake_model_dir: Path, tmp_path: Path
 ) -> None:
-    """A model snapshot must survive pack -> encrypt -> manifest -> decrypt -> verify -> unpack."""
+    """A model snapshot must survive pack -> encrypt -> sign -> verify -> decrypt -> unpack."""
     plaintext_tar = packaging.pack_directory(fake_model_dir)
 
     encrypted_container = crypto.encrypt(
@@ -27,6 +28,9 @@ def test_pack_encrypt_manifest_decrypt_verify_round_trip(
         test_const.TEST_MASTER_KEY,
         chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
     )
+
+    signing_private_key = signing.load_private_key(test_const.TEST_SIGNING_PRIVATE_KEY_PEM)
+    signing_public_key = signing.load_public_key(test_const.TEST_SIGNING_PUBLIC_KEY_PEM)
 
     artifact_manifest = manifest.build_manifest(
         created_at="2026-09-15T10:00:00Z",
@@ -48,11 +52,19 @@ def test_pack_encrypt_manifest_decrypt_verify_round_trip(
             format_version=1,
             key_id="model-encryption-key",
         ),
+        signature=manifest.SignatureInfo(
+            algorithm="Ed25519",
+            public_key_sha256=signing.public_key_fingerprint(signing_public_key),
+            signature_path="versions/1.0.0/manifest.json.sig",
+        ),
         producer=manifest.ProducerInfo(tool="model_pipeline", tool_version="0.1.0"),
     )
     manifest_bytes = manifest.serialize_manifest(artifact_manifest)
+    signature_bytes = signing.sign(manifest_bytes, signing_private_key)
 
-    # Consumer side, from here: only the manifest, the encrypted artifact, and a key file.
+    # Consumer side, from here: only the manifest, its signature, the
+    # encrypted artifact, and the two key files (public, then private).
+    signing.verify(manifest_bytes, signature_bytes, signing_public_key)
     received_manifest = manifest.deserialize_manifest(manifest_bytes)
     manifest.verify_artifact_sha256(received_manifest, encrypted_container)
 

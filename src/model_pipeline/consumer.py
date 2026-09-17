@@ -1,14 +1,16 @@
 """Consumer orchestration: download, verify, decrypt, and unpack the model artifact.
 
-Ties together ``hub`` (network I/O), ``manifest`` (integrity metadata),
-``crypto`` (decryption), and ``packaging`` (tar) into the flow the enunciado
-describes for the consumer side: download the encrypted artifact and its
-manifest from Hugging Face Hub, verify the artifact hash before decrypting
-and the plaintext hash after, and unpack the recovered model snapshot into a
-working directory. Loading the model into memory and running an inference
-smoke test are handled separately by :func:`load_and_predict`, so that the
-network and cryptographic flow in :func:`consume` stays testable without
-pulling ``transformers``/``torch`` into the test environment.
+Ties together ``hub`` (network I/O), ``signing`` (signature verification),
+``manifest`` (integrity metadata), ``crypto`` (decryption), and ``packaging``
+(tar) into the flow the enunciado describes for the consumer side: download
+the manifest and its detached signature, verify the signature *before*
+parsing the manifest or touching the decryption key, then download the
+encrypted artifact, verify the artifact hash before decrypting and the
+plaintext hash after, and unpack the recovered model snapshot into a working
+directory. Loading the model into memory and running an inference smoke test
+are handled separately by :func:`load_and_predict`, so that the network and
+cryptographic flow in :func:`consume` stays testable without pulling
+``transformers``/``torch`` into the test environment.
 """
 
 from __future__ import annotations
@@ -16,8 +18,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 import model_pipeline.constants as const
-from model_pipeline import crypto, hub, packaging
+from model_pipeline import crypto, hub, packaging, signing
 from model_pipeline.hub import HubError
 from model_pipeline.manifest import (
     Manifest,
@@ -25,10 +29,12 @@ from model_pipeline.manifest import (
     verify_artifact_sha256,
     verify_plaintext_sha256,
 )
+from model_pipeline.signing import SignatureError
 
 
 class ConsumerError(Exception):
-    """Raised when the consumer flow cannot proceed: a key_id mismatch or a failed decryption."""
+    """Raised when the consumer flow cannot proceed: a failed verification, a key_id mismatch,
+    or a failed decryption."""
 
 
 def consume(
@@ -36,41 +42,87 @@ def consume(
     repo_id: str,
     version: str,
     master_key: bytes,
+    public_key: Ed25519PublicKey,
     workdir: Path,
     expected_key_id: str = const.DEFAULT_KEY_ID,
 ) -> Manifest:
-    """Download, verify, decrypt, and unpack the artifact for version into workdir.
+    """Verify, download, decrypt, and unpack the artifact for version into workdir.
 
     Returns the manifest once the recovered model snapshot has been fully
-    unpacked into workdir. Raises ConsumerError on a key_id mismatch or a
-    decryption failure (most likely the wrong key); a corrupted or tampered
-    artifact instead raises ``manifest.ManifestError`` from the sha256 checks.
+    unpacked into workdir. Raises ConsumerError on a failed signature
+    verification, a key_id mismatch, or a decryption failure (most likely
+    the wrong key); a corrupted or tampered artifact instead raises
+    ``manifest.ManifestError`` from the sha256 checks. The signature is
+    checked before the artifact is downloaded and before the decryption key
+    is read, so a run against a tampered repo never touches either.
     """
-    artifact_manifest = _fetch_and_check_manifest(repo_id, version, expected_key_id)
-    plaintext_tar = _download_and_decrypt(repo_id, version, artifact_manifest, master_key)
-    packaging.unpack_archive(plaintext_tar, workdir)
-    return artifact_manifest
-
-
-def _fetch_and_check_manifest(repo_id: str, version: str, expected_key_id: str) -> Manifest:
-    """Download the manifest for version and reject it early if its key_id label is unexpected.
-
-    This check runs before any network transfer of the (potentially large)
-    encrypted artifact or any decryption attempt: a key_id mismatch means the
-    consumer is looking at the wrong Secret, so failing fast here saves the
-    cost of downloading and attempting to decrypt with a key that is already
-    known to be the wrong one.
-    """
-    try:
-        manifest_bytes = hub.download_manifest(repo_id, version)
-    except HubError as exc:
-        raise ConsumerError(str(exc)) from exc
-    artifact_manifest = deserialize_manifest(manifest_bytes)
+    artifact_manifest = _download_and_verify_manifest(repo_id, version, public_key)
     actual_key_id = artifact_manifest["encryption"]["key_id"]
     if actual_key_id != expected_key_id:
         raise ConsumerError(
             f"key_id mismatch: manifest expects {actual_key_id!r}, consumer has {expected_key_id!r}"
         )
+    plaintext_tar = _download_and_decrypt(repo_id, version, artifact_manifest, master_key)
+    packaging.unpack_archive(plaintext_tar, workdir)
+    return artifact_manifest
+
+
+def verify_published_version(
+    *, repo_id: str, version: str, public_key: Ed25519PublicKey
+) -> Manifest:
+    """Verify a published version's signature, needing neither the decryption key nor a Hub token.
+
+    This is the standalone counterpart of the signature check :func:`consume`
+    performs internally, exposed so that anyone -- not only a party holding
+    the decryption key -- can check that a published artifact's manifest was
+    signed by the expected producer.
+    """
+    return _download_and_verify_manifest(repo_id, version, public_key)
+
+
+def _download_and_verify_manifest(
+    repo_id: str, version: str, public_key: Ed25519PublicKey
+) -> Manifest:
+    """Download the manifest and its detached signature, verify, and cross-check consistency.
+
+    Verification runs on the raw downloaded bytes, before they are parsed as
+    JSON: the signature covers the bytes as published, so there is no reason
+    to accept the small extra attack surface of parsing attacker-supplied
+    JSON before it is authenticated. Two cheap cross-checks run afterwards --
+    the signed ``artifact.version`` against the version requested, and the
+    signed ``signature.public_key_sha256`` against the fingerprint of the key
+    that was actually used -- but neither of them ever chooses *which* key
+    verifies the signature: that is always the mounted public_key, never a
+    value read from the manifest itself.
+    """
+    try:
+        manifest_bytes = hub.download_manifest(repo_id, version)
+        signature_bytes = hub.download_signature(repo_id, version)
+    except HubError as exc:
+        raise ConsumerError(str(exc)) from exc
+
+    try:
+        signing.verify(manifest_bytes, signature_bytes, public_key)
+    except SignatureError as exc:
+        raise ConsumerError(f"signature verification failed: {exc}") from exc
+
+    artifact_manifest = deserialize_manifest(manifest_bytes)
+
+    actual_version = artifact_manifest["artifact"]["version"]
+    if actual_version != version:
+        raise ConsumerError(
+            f"version mismatch: manifest is signed for {actual_version!r}, requested {version!r}"
+        )
+
+    expected_fingerprint = signing.public_key_fingerprint(public_key)
+    signed_fingerprint = artifact_manifest["signature"]["public_key_sha256"]
+    if signed_fingerprint != expected_fingerprint:
+        raise ConsumerError(
+            "signing key fingerprint mismatch: the manifest names a different public key than "
+            f"the one mounted (mounted key fingerprint {expected_fingerprint!r}, "
+            f"manifest names {signed_fingerprint!r})"
+        )
+
     return artifact_manifest
 
 

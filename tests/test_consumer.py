@@ -1,10 +1,10 @@
 """Consumer orchestration tests, against a fake Hugging Face Hub kept in tmp_path.
 
-The fake hub stands in for ``model_pipeline.hub``: it "downloads" a manifest
-and an encrypted artifact that were built beforehand, so the full
-download -> verify -> decrypt -> verify -> unpack flow runs end to end
-without any network access. ``transformers`` is mocked for the load_and_predict
-tests so the suite never needs torch installed.
+The fake hub stands in for ``model_pipeline.hub``: it "downloads" a manifest,
+its detached signature, and an encrypted artifact that were built beforehand,
+so the full verify -> download -> decrypt -> verify -> unpack flow runs end
+to end without any network access. ``transformers`` is mocked for the
+load_and_predict tests so the suite never needs torch installed.
 """
 
 from __future__ import annotations
@@ -17,39 +17,49 @@ from unittest.mock import MagicMock, patch
 import pytest
 import tests.constants as test_const
 
-from model_pipeline import consumer, crypto, packaging
+from model_pipeline import consumer, crypto, packaging, signing
 from model_pipeline import manifest as manifest_module
 from model_pipeline.consumer import (
     ConsumerError,
     consume,
     load_and_predict,
     resolve_consume_version,
+    verify_published_version,
 )
 from model_pipeline.hub import HubError
 
 REPO_ID = "me/bert-tiny-encrypted"
 VERSION = "1.0.0"
 
+SIGNING_PRIVATE_KEY = signing.load_private_key(test_const.TEST_SIGNING_PRIVATE_KEY_PEM)
+SIGNING_PUBLIC_KEY = signing.load_public_key(test_const.TEST_SIGNING_PUBLIC_KEY_PEM)
+OTHER_SIGNING_PUBLIC_KEY = signing.load_public_key(test_const.OTHER_SIGNING_PUBLIC_KEY_PEM)
 
-def _build_manifest_and_artifact(
+
+def _build_signed_manifest_and_artifact(
     fake_model_dir: Path,
     *,
     key: bytes = test_const.TEST_MASTER_KEY,
     key_id: str = "model-encryption-key",
-) -> tuple[manifest_module.Manifest, bytes]:
-    """Build a real encrypted artifact for fake_model_dir and its matching manifest."""
+    version: str = VERSION,
+    signing_private_key=SIGNING_PRIVATE_KEY,
+    fingerprint: str | None = None,
+) -> tuple[bytes, bytes, bytes]:
+    """Build a real encrypted artifact, its signed manifest bytes, and its signature bytes."""
     plaintext_tar = packaging.pack_directory(fake_model_dir)
     encrypted_container = crypto.encrypt(
         plaintext_tar, key, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
     )
+    if fingerprint is None:
+        fingerprint = signing.public_key_fingerprint(signing_private_key.public_key())
     artifact_manifest = manifest_module.build_manifest(
         created_at="2026-09-15T10:00:00Z",
         model=manifest_module.ModelInfo(
             source_repo="prajjwal1/bert-tiny", source_revision="deadbeef", task_hint="fill-mask"
         ),
         artifact=manifest_module.ArtifactInfo(
-            version=VERSION,
-            path=f"versions/{VERSION}/model.tar.enc",
+            version=version,
+            path=f"versions/{version}/model.tar.enc",
             size_bytes=len(encrypted_container),
             sha256=manifest_module.compute_sha256(encrypted_container),
             plaintext_sha256=manifest_module.compute_sha256(plaintext_tar),
@@ -62,9 +72,16 @@ def _build_manifest_and_artifact(
             format_version=1,
             key_id=key_id,
         ),
+        signature=manifest_module.SignatureInfo(
+            algorithm="Ed25519",
+            public_key_sha256=fingerprint,
+            signature_path=f"versions/{version}/manifest.json.sig",
+        ),
         producer=manifest_module.ProducerInfo(tool="model_pipeline", tool_version="0.1.0"),
     )
-    return artifact_manifest, encrypted_container
+    manifest_bytes = manifest_module.serialize_manifest(artifact_manifest)
+    signature_bytes = signing.sign(manifest_bytes, signing_private_key)
+    return manifest_bytes, signature_bytes, encrypted_container
 
 
 class FakeHub:
@@ -73,11 +90,13 @@ class FakeHub:
     def __init__(
         self,
         manifest_bytes: bytes,
+        signature_bytes: bytes,
         artifact_bytes: bytes,
         published_versions: list[str] | None = None,
     ) -> None:
-        """Store the manifest/artifact bytes and published versions this fake hub will serve."""
+        """Store the manifest, signature, and artifact bytes this fake hub will serve."""
         self.manifest_bytes = manifest_bytes
+        self.signature_bytes = signature_bytes
         self.artifact_bytes = artifact_bytes
         self.published_versions = published_versions or [VERSION]
         self.download_calls: list[tuple[str, str, str]] = []
@@ -86,6 +105,11 @@ class FakeHub:
         """Record the call and return the stored manifest bytes."""
         self.download_calls.append(("manifest", repo_id, version))
         return self.manifest_bytes
+
+    def download_signature(self, repo_id: str, version: str) -> bytes:
+        """Record the call and return the stored signature bytes."""
+        self.download_calls.append(("signature", repo_id, version))
+        return self.signature_bytes
 
     def download_artifact(self, repo_id: str, version: str) -> bytes:
         """Record the call and return the stored artifact bytes."""
@@ -99,10 +123,13 @@ class FakeHub:
 
 @pytest.fixture
 def fake_hub_with_valid_artifact(monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path) -> FakeHub:
-    """Patch model_pipeline.consumer.hub with a FakeHub serving a valid artifact/manifest pair."""
-    artifact_manifest, encrypted_container = _build_manifest_and_artifact(fake_model_dir)
+    """Patch model_pipeline.consumer.hub with a FakeHub serving a validly signed artifact."""
+    manifest_bytes, signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
+        fake_model_dir
+    )
     fake = FakeHub(
-        manifest_bytes=manifest_module.serialize_manifest(artifact_manifest),
+        manifest_bytes=manifest_bytes,
+        signature_bytes=signature_bytes,
         artifact_bytes=encrypted_container,
     )
     monkeypatch.setattr(consumer, "hub", fake)
@@ -119,12 +146,14 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         repo_id=REPO_ID,
         version=VERSION,
         master_key=test_const.TEST_MASTER_KEY,
+        public_key=SIGNING_PUBLIC_KEY,
         workdir=workdir,
     )
 
     assert returned_manifest["artifact"]["version"] == VERSION
     assert fake_hub_with_valid_artifact.download_calls == [
         ("manifest", REPO_ID, VERSION),
+        ("signature", REPO_ID, VERSION),
         ("artifact", REPO_ID, VERSION),
     ]
     for relative_path in ["config.json", "pytorch_model.bin", "tokenizer/vocab.txt"]:
@@ -133,15 +162,118 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         ).read_bytes()
 
 
+def test_consume_rejects_an_invalid_signature_without_downloading_the_artifact(
+    fake_hub_with_valid_artifact: FakeHub, tmp_path: Path
+) -> None:
+    """An invalid signature must abort before the artifact is downloaded or the key is read."""
+    with pytest.raises(ConsumerError, match="signature verification failed"):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            public_key=OTHER_SIGNING_PUBLIC_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+    assert fake_hub_with_valid_artifact.download_calls == [
+        ("manifest", REPO_ID, VERSION),
+        ("signature", REPO_ID, VERSION),
+    ]
+
+
+def test_consume_rejects_a_missing_signature_file(
+    monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
+) -> None:
+    """consume must abort when the repo has a manifest but no published signature."""
+    manifest_bytes, _signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
+        fake_model_dir
+    )
+
+    class NoSignatureHub:
+        def download_manifest(self, repo_id: str, version: str) -> bytes:
+            return manifest_bytes
+
+        def download_signature(self, repo_id: str, version: str) -> bytes:
+            raise HubError(f"no signature published for {repo_id!r} version {version!r}")
+
+    monkeypatch.setattr(consumer, "hub", NoSignatureHub())
+
+    with pytest.raises(ConsumerError, match="no signature published"):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+
+
+def test_consume_rejects_a_version_mismatch_between_request_and_signed_manifest(
+    monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
+) -> None:
+    """A manifest signed for a version other than the one requested must be rejected."""
+    manifest_bytes, signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
+        fake_model_dir, version="1.0.0"
+    )
+    fake = FakeHub(
+        manifest_bytes=manifest_bytes,
+        signature_bytes=signature_bytes,
+        artifact_bytes=encrypted_container,
+        published_versions=["1.0.0", "2.0.0"],
+    )
+    monkeypatch.setattr(consumer, "hub", fake)
+
+    with pytest.raises(ConsumerError, match="version mismatch"):
+        consume(
+            repo_id=REPO_ID,
+            version="2.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+
+
+def test_consume_rejects_a_manifest_naming_a_foreign_key_fingerprint(
+    monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
+) -> None:
+    """A manifest naming a fingerprint other than the mounted key's must be rejected.
+
+    The manifest field is only ever compared against the mounted key; it can
+    never redirect verification to a different key. This manifest is validly
+    signed by SIGNING_PRIVATE_KEY but claims OTHER's fingerprint, so
+    verification against the correct, mounted SIGNING_PUBLIC_KEY succeeds
+    and only the cross-check should fail.
+    """
+    other_fingerprint = signing.public_key_fingerprint(OTHER_SIGNING_PUBLIC_KEY)
+    manifest_bytes, signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
+        fake_model_dir, fingerprint=other_fingerprint
+    )
+    fake = FakeHub(
+        manifest_bytes=manifest_bytes,
+        signature_bytes=signature_bytes,
+        artifact_bytes=encrypted_container,
+    )
+    monkeypatch.setattr(consumer, "hub", fake)
+
+    with pytest.raises(ConsumerError, match="fingerprint mismatch"):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+
+
 def test_consume_rejects_key_id_mismatch(
     monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
 ) -> None:
     """consume must refuse to proceed when the manifest's key_id does not match expected_key_id."""
-    artifact_manifest, encrypted_container = _build_manifest_and_artifact(
+    manifest_bytes, signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
         fake_model_dir, key_id="some-other-secret"
     )
     fake = FakeHub(
-        manifest_bytes=manifest_module.serialize_manifest(artifact_manifest),
+        manifest_bytes=manifest_bytes,
+        signature_bytes=signature_bytes,
         artifact_bytes=encrypted_container,
     )
     monkeypatch.setattr(consumer, "hub", fake)
@@ -151,11 +283,16 @@ def test_consume_rejects_key_id_mismatch(
             repo_id=REPO_ID,
             version=VERSION,
             master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
             workdir=tmp_path / "restored-model",
             expected_key_id="model-encryption-key",
         )
-    # The key_id check must run before the artifact itself is downloaded.
-    assert fake.download_calls == [("manifest", REPO_ID, VERSION)]
+    # The key_id check must run after signature verification but before the
+    # artifact itself is downloaded.
+    assert fake.download_calls == [
+        ("manifest", REPO_ID, VERSION),
+        ("signature", REPO_ID, VERSION),
+    ]
 
 
 def test_consume_rejects_the_wrong_key(
@@ -167,6 +304,7 @@ def test_consume_rejects_the_wrong_key(
             repo_id=REPO_ID,
             version=VERSION,
             master_key=test_const.OTHER_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
             workdir=tmp_path / "restored-model",
         )
 
@@ -175,11 +313,14 @@ def test_consume_rejects_a_tampered_artifact(
     monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
 ) -> None:
     """consume must raise ManifestError when the downloaded artifact does not match its sha256."""
-    artifact_manifest, encrypted_container = _build_manifest_and_artifact(fake_model_dir)
+    manifest_bytes, signature_bytes, encrypted_container = _build_signed_manifest_and_artifact(
+        fake_model_dir
+    )
     tampered = bytearray(encrypted_container)
     tampered[-1] ^= 0xFF
     fake = FakeHub(
-        manifest_bytes=manifest_module.serialize_manifest(artifact_manifest),
+        manifest_bytes=manifest_bytes,
+        signature_bytes=signature_bytes,
         artifact_bytes=bytes(tampered),
     )
     monkeypatch.setattr(consumer, "hub", fake)
@@ -189,6 +330,7 @@ def test_consume_rejects_a_tampered_artifact(
             repo_id=REPO_ID,
             version=VERSION,
             master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
             workdir=tmp_path / "restored-model",
         )
 
@@ -209,7 +351,30 @@ def test_consume_reports_a_missing_artifact_as_a_consumer_error(
             repo_id=REPO_ID,
             version=VERSION,
             master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
             workdir=tmp_path / "restored-model",
+        )
+
+
+def test_verify_published_version_succeeds_with_no_master_key(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """verify_published_version must confirm a valid signature using only the public key."""
+    artifact_manifest = verify_published_version(
+        repo_id=REPO_ID, version=VERSION, public_key=SIGNING_PUBLIC_KEY
+    )
+    assert artifact_manifest["artifact"]["version"] == VERSION
+    # No artifact was downloaded: verification never needed the decryption key.
+    assert ("artifact", REPO_ID, VERSION) not in fake_hub_with_valid_artifact.download_calls
+
+
+def test_verify_published_version_rejects_the_wrong_public_key(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """verify_published_version must reject a signature checked against the wrong public key."""
+    with pytest.raises(ConsumerError, match="signature verification failed"):
+        verify_published_version(
+            repo_id=REPO_ID, version=VERSION, public_key=OTHER_SIGNING_PUBLIC_KEY
         )
 
 
