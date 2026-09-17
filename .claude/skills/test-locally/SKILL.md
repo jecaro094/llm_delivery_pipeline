@@ -1,15 +1,16 @@
 ---
 name: test-locally
-description: Test the llm_delivery_pipeline repository locally, in any of its three independent ways — the pytest suite, the producer/consumer CLI against real Hugging Face Hub, or the full end-to-end demo on minikube. Use this whenever the user wants to run, test, verify, or demo this project locally, check that a change still works, or asks "how do I try this out", even if they don't name a specific option. Also use it to answer "how do I test this" for someone evaluating the repository (e.g. a technical interviewer).
+description: Test the llm_delivery_pipeline repository locally, in any of its three independent ways — the pytest suite, the producer/consumer CLI against real Hugging Face Hub, or the full end-to-end demo on minikube — or via the pinned demo artifact for a zero-setup check with no Hugging Face account or token. Use this whenever the user wants to run, test, verify, or demo this project locally, check that a change still works, or asks "how do I try this out", even if they don't name a specific option. Also use it to answer "how do I test this" for someone evaluating the repository (e.g. a technical interviewer) or who is short on time.
 ---
 
 # Test locally
 
-This repository has three independent ways to exercise it locally, documented in detail in the
-README's ["Testing this locally"](../../../README.md#testing-this-locally) section. This skill's
-job is to run the right one — the README is the source of truth for exact commands and
-dependencies; if the two ever disagree, trust the README and flag the mismatch instead of silently
-following this file.
+This repository has three independent ways to exercise it locally, plus a zero-setup fast path
+against a pinned demo artifact, documented in detail in the README's ["Testing this
+locally"](../../../README.md#testing-this-locally) section and `demo/README.md`. This skill's job
+is to run the right one — the README is the source of truth for exact commands and dependencies;
+if the two ever disagree, trust the README and flag the mismatch instead of silently following
+this file.
 
 ## Choosing an option
 
@@ -22,10 +23,17 @@ Never guess which option to run. Ask the user which one they want, using this fr
   end-to-end, but skips the Secret mount and in-memory decryption.
 - **Option 3 — full Kubernetes demo (`scripts/demo.sh`).** Needs Docker, minikube, `kubectl`, and
   the same `HF_TOKEN`. The only option that exercises the actual architecture (Job, Secret, Pod,
-  `tmpfs` decryption) described in the README.
+  `tmpfs` decryption) described in the README. ~8-10 min.
+
+If the user has no Hugging Face account, no write token, or is short on time (e.g. an interviewer
+evaluating the repository), mention the **pinned demo artifact fast path** as an alternative to
+Option 2 before asking: it runs the real consumer against a real, already-published artifact with
+no account, no token, and nothing to publish — see "Fast path" below. Offer it alongside the three
+options rather than instead of them; the user still picks.
 
 If the user's request already implies one (e.g. "run the tests", "just check the code compiles" →
-Option 1; "show me the full demo" → Option 3), proceed directly without asking. Otherwise, ask.
+Option 1; "show me the full demo" → Option 3; "no token"/"short on time" → the fast path), proceed
+directly without asking. Otherwise, ask.
 
 ## Asking for required inputs
 
@@ -36,6 +44,30 @@ one value at a time is fine; don't block on gathering all of them upfront. Optio
 external input, so this only applies to Options 2 and 3.
 
 ## Running each option
+
+### Fast path — pinned demo artifact (no account, no token)
+
+Runs the real consumer against a real, already-published artifact (`demo/README.md`), using a
+demo-only encryption key committed to the repository on purpose (see `demo/README.md` for why that
+exception is safe: the key protects nothing but a disposable public demo artifact). Needs no
+`HF_TOKEN`, no Hugging Face account, and publishes nothing.
+
+```bash
+python3.12 -m venv .venv   # skip if a .venv already exists
+source .venv/bin/activate
+pip install -e ".[consumer,dev]"
+
+ENCRYPTION_KEY_FILE=demo/encryption-key \
+  python -m model_pipeline consume \
+    --repo jecaro/bert-tiny-encrypted \
+    --version demo \
+    --workdir /tmp/model \
+    --smoke-test
+```
+
+This proves the same thing Option 2's consume step proves — download, decryption, model loading —
+against a real published artifact, without the producer side or the Secret/Pod machinery from
+Option 3.
 
 ### Option 1 — test suite
 
@@ -140,5 +172,5 @@ encryption isn't actually protecting anything.
 ## Reporting results
 
 Summarize what ran, what passed, and — if something failed — the exact error rather than a
-paraphrase, plus which of the three options it was (so the user, or a future session, knows which
+paraphrase, plus which of the four paths it was (so the user, or a future session, knows which
 dependency to check first: Python environment, `HF_TOKEN`/network, or the local Kubernetes setup).

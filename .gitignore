@@ -20,6 +20,7 @@ htmlcov/
 !.env.example
 
 *.key
+.encryption-key
 *.pem
 k8s/secret.yaml
 
