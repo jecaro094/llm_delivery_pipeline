@@ -1,0 +1,20 @@
+# Template only, not applied by kustomization.yaml and never filled in with
+# a real key: the real ConfigMap is created imperatively by
+# scripts/gen-signing-key.sh (see README.md), alongside the model-signing-key
+# Secret it is paired with.
+#
+# A ConfigMap, not a Secret, because the value is a public key: storing it as
+# a Secret would misrepresent its sensitivity (see docs/decisions.md,
+# decision 18). It is the consumer's trust anchor for signature verification
+# and arrives only through the cluster, never through the Hugging Face repo
+# that serves the artifact.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-signing-public-key
+  namespace: confidential-models
+data:
+  public-key.pem: |
+    <PEM-encoded Ed25519 public key (SubjectPublicKeyInfo), e.g. the second
+    block printed by `python -m model_pipeline signing-keygen`. Mounted only
+    by the consumer.>

@@ -10,8 +10,9 @@
 # --producer-only publishes an artifact and stops before touching the
 # consumer Pod; --consumer-only decrypts an already-published artifact and
 # skips everything producer-specific (HF_TOKEN, the hf-credentials Secret,
-# and regenerating the encryption-key Secret, which must stay the one the
-# targeted artifact was actually encrypted with).
+# and regenerating the encryption-key Secret and the signing-key Secret /
+# public-key ConfigMap, which must stay the ones the targeted artifact was
+# actually encrypted and signed with).
 #
 # The producer refuses to overwrite a version that already exists (artifact
 # versions are immutable, see PLAN.md, decision 7). Rather than let that
@@ -31,7 +32,7 @@ usage() {
     echo "  --version VERSION  publish/consume this artifact version (default: MODEL_VERSION env, else the value baked into the k8s manifests)" >&2
     echo "  --repo REPO        target this Hugging Face repo (default: MODEL_REPO_ID env, else the value baked into the k8s manifests)" >&2
     echo "  --producer-only    publish the artifact and stop; skip the consumer Pod" >&2
-    echo "  --consumer-only    decrypt an already-published artifact; skip HF_TOKEN, hf-credentials, and regenerating the encryption key" >&2
+    echo "  --consumer-only    decrypt an already-published artifact; skip HF_TOKEN, hf-credentials, and regenerating the encryption/signing keys" >&2
 }
 
 VERSION_OVERRIDE="${MODEL_VERSION:-}"
@@ -188,6 +189,7 @@ kubectl apply -f "${REPO_ROOT}/k8s/serviceaccount.yaml"
 if [ "${MODE}" != "consumer" ]; then
     echo "== Provisioning secrets =="
     "${REPO_ROOT}/scripts/gen-key.sh"
+    "${REPO_ROOT}/scripts/gen-signing-key.sh"
     kubectl -n "${NAMESPACE}" create secret generic hf-credentials \
         --from-literal=hf-token="${HF_TOKEN}" \
         --dry-run=client -o yaml | kubectl apply -f -

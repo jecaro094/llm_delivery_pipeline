@@ -38,6 +38,8 @@ spec:
               value: "1.0.3"
             - name: ENCRYPTION_KEY_FILE
               value: /etc/model-keys/encryption-key
+            - name: SIGNING_KEY_FILE
+              value: /etc/model-signing/signing-key.pem
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -46,6 +48,9 @@ spec:
           volumeMounts:
             - name: encryption-key
               mountPath: /etc/model-keys
+              readOnly: true
+            - name: signing-key
+              mountPath: /etc/model-signing
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -60,6 +65,10 @@ spec:
         - name: encryption-key
           secret:
             secretName: model-encryption-key
+            defaultMode: 0440
+        - name: signing-key
+          secret:
+            secretName: model-signing-key
             defaultMode: 0440
         - name: tmp
           emptyDir: {}

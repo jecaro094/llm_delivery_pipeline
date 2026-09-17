@@ -38,11 +38,18 @@ spec:
           value: /mnt/model
         - name: ENCRYPTION_KEY_FILE
           value: /etc/model-keys/encryption-key
+        - name: SIGNING_PUBLIC_KEY_FILE
+          value: /etc/model-signing-pub/public-key.pem
       volumeMounts:
         # Mounted read-only: the consumer only ever reads the decryption
         # key, it never needs to write it (see PLAN.md, decision #6).
         - name: encryption-key
           mountPath: /etc/model-keys
+          readOnly: true
+        # The consumer's trust anchor: this ConfigMap, not the Hub, is what
+        # tells it which producer to trust (see docs/decisions.md, decision 18).
+        - name: signing-public-key
+          mountPath: /etc/model-signing-pub
           readOnly: true
         # tmpfs: the decrypted model is written here and never touches the
         # node's disk (see PLAN.md, decision #5).
@@ -62,6 +69,9 @@ spec:
       secret:
         secretName: model-encryption-key
         defaultMode: 0440
+    - name: signing-public-key
+      configMap:
+        name: model-signing-public-key
     - name: model-workdir
       emptyDir:
         medium: Memory
