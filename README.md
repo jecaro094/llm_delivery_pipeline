@@ -1,8 +1,8 @@
 # llm_delivery_pipeline
 
-> This branch (`main`) implements only the mandatory layer of the exercise. For that layer plus
-> an optional signing/verification layer on top, see the
-> [`layer_2`](https://github.com/jecaro094/llm_delivery_pipeline/tree/layer_2) branch.
+> This branch (`layer_2`) implements the mandatory layer of the exercise plus its optional
+> signing/verification layer. For the mandatory layer on its own, see the
+> [`main`](https://github.com/jecaro094/llm_delivery_pipeline/tree/main) branch.
 
 A proof of concept for confidential distribution of an LLM/ML model through Kubernetes: a
 **producer** encrypts a small, open Hugging Face model, signs the manifest describing it, and
@@ -71,8 +71,8 @@ directly with `/test-locally`.
 **Short on time?** [Option 1](#option-1--run-the-test-suite-only) needs nothing but a Python
 virtualenv and already exercises the cryptographic core directly, including the tampering,
 truncation, and reordering tests that back the security claims in this README. To also see the
-real pipeline decrypt a real published artifact — no Hugging Face account, no token, nothing to
-publish yourself — see [`demo/README.md`](demo/README.md).
+real pipeline verify and decrypt a real published artifact — no Hugging Face account, no token,
+nothing to publish yourself — see [`demo/README.md`](demo/README.md).
 
 | | What it proves | What it needs | ~Time |
 |---|---|---|---|

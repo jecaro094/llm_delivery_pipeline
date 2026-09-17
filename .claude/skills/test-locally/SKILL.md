@@ -28,9 +28,9 @@ Never guess which option to run. Ask the user which one they want, using this fr
 
 If the user has no Hugging Face account, no write token, or is short on time (e.g. an interviewer
 evaluating the repository), mention the **pinned demo artifact fast path** as an alternative to
-Option 2 before asking: it runs the real consumer against a real, already-published artifact with
-no account, no token, and nothing to publish — see "Fast path" below. Offer it alongside the three
-options rather than instead of them; the user still picks.
+Option 2 before asking: it runs the real consumer against a real, already-published artifact — with
+signature verification — with no account, no token, and nothing to publish. See "Fast path" below.
+Offer it alongside the three options rather than instead of them; the user still picks.
 
 If the user's request already implies one (e.g. "run the tests", "just check the code compiles" →
 Option 1; "show me the full demo" → Option 3; "no token"/"short on time" → the fast path), proceed
@@ -49,26 +49,26 @@ external input, so this only applies to Options 2 and 3.
 ### Fast path — pinned demo artifact (no account, no token)
 
 Runs the real consumer against a real, already-published artifact (`demo/README.md`), using a
-demo-only encryption key committed to the repository on purpose (see `demo/README.md` for why that
-exception is safe: the key protects nothing but a disposable public demo artifact). Needs no
-`HF_TOKEN`, no Hugging Face account, and publishes nothing.
+demo-only encryption key and signing public key committed to the repository on purpose (see
+`demo/README.md` for why that exception is safe: the keys protect nothing but a disposable public
+demo artifact). Needs no `HF_TOKEN`, no Hugging Face account, and publishes nothing.
 
 ```bash
 python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[consumer,dev]"
 
-ENCRYPTION_KEY_FILE=demo/encryption-key \
+ENCRYPTION_KEY_FILE=demo/encryption-key SIGNING_PUBLIC_KEY_FILE=demo/signing-public-key.pem \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
-    --version demo \
+    --version demo-signed \
     --workdir /tmp/model \
     --smoke-test
 ```
 
-This proves the same thing Option 2's consume step proves — download, decryption, model loading —
-against a real published artifact, without the producer side or the Secret/Pod machinery from
-Option 3.
+This proves the same thing Option 2's consume step proves — signature verification, download,
+decryption, model loading — against a real published artifact, without the producer side or the
+Secret/Pod machinery from Option 3.
 
 ### Option 1 — test suite
 
