@@ -1,5 +1,9 @@
 # llm_delivery_pipeline
 
+> This branch (`main`) implements only the mandatory layer of the exercise. For that layer plus
+> an optional signing/verification layer on top, see the
+> [`layer_2`](https://github.com/jecaro094/llm_delivery_pipeline/tree/layer_2) branch.
+
 A proof of concept for confidential distribution of an LLM/ML model through Kubernetes: a
 **producer** encrypts a small, open Hugging Face model and publishes the ciphertext to the
 Hugging Face Hub, storing the decryption key as a Kubernetes Secret; a **consumer** pod mounts
