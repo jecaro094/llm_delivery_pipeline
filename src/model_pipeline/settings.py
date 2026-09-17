@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     hf_token: str | None = None
     encryption_key: str | None = None
     encryption_key_file: Path | None = None
+    signing_key: str | None = None
+    signing_key_file: Path | None = None
+    signing_public_key: str | None = None
+    signing_public_key_file: Path | None = None
     model_repo_id: str | None = None
     model_version: str | None = None
     source_model: str = const.DEFAULT_SOURCE_MODEL
