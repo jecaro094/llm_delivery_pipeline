@@ -109,8 +109,12 @@ ENCRYPTION_KEY_FILE=.encryption-key \
 
 ### Option 3 — full Kubernetes demo, with verification
 
-Needs `HF_TOKEN` (a Hugging Face write token). Check whether it's already set in the environment
-before asking the user for it. Run the demo:
+Needs `HF_TOKEN` (a Hugging Face write token), plus Docker, minikube, and `kubectl` on the `PATH`
+with the Docker daemon running. `scripts/demo.sh` checks all of these itself before doing anything
+else and exits immediately with a clear message naming what's missing — if that happens, don't
+retry the script; tell the user what's missing and point at Option 1/2 or the fast path above
+instead, exactly as the script's own message does. Check whether `HF_TOKEN` is already set in the
+environment before asking the user for it. Run the demo:
 
 ```bash
 export HF_TOKEN=<token>

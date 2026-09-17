@@ -73,6 +73,33 @@ NAMESPACE="${NAMESPACE:-confidential-models}"
 PRODUCER_TAG="model-pipeline-producer:local" # must match scripts/build-images.sh
 CONSUMER_TAG="model-pipeline-consumer:local" # must match scripts/build-images.sh
 
+# Fails fast with a specific, actionable message when a required tool is
+# missing or unreachable, instead of letting the script die deep inside a
+# `kubectl wait`/`docker run` call with a much less obvious error. Anyone
+# without Docker/minikube should use Option 1/2 in the README instead of
+# this script.
+check_prerequisites() {
+    local missing=()
+    command -v docker >/dev/null 2>&1 || missing+=("docker (CLI not found)")
+    if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+        missing+=("docker (installed, but the daemon is not running/reachable)")
+    fi
+    command -v minikube >/dev/null 2>&1 || missing+=("minikube")
+    command -v kubectl >/dev/null 2>&1 || missing+=("kubectl")
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "This script needs Docker, minikube, and kubectl. Missing/unavailable:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        echo >&2
+        echo "See the README's 'Testing this locally' section for options that don't" >&2
+        echo "need Kubernetes (Option 1: pytest only; Option 2: the CLI directly" >&2
+        echo "against Hugging Face Hub)." >&2
+        exit 1
+    fi
+}
+
+check_prerequisites
+
 if [ "${MODE}" != "consumer" ] && [ -z "${HF_TOKEN:-}" ]; then
     echo "HF_TOKEN must be set (a Hugging Face token with write access to the target repo)." >&2
     exit 1
