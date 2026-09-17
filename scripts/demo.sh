@@ -119,7 +119,21 @@ apply_manifest() {
     local set_args=()
     [ -n "${VERSION_OVERRIDE}" ] && set_args+=("MODEL_VERSION=${VERSION_OVERRIDE}")
     [ -n "${REPO_OVERRIDE}" ] && set_args+=("MODEL_REPO_ID=${REPO_OVERRIDE}")
-    kubectl set env --local -f "${file}" "${set_args[@]}" -o yaml | kubectl apply -f -
+
+    # On some kubectl client versions (observed on v1.37.0), `set env --local
+    # -o yaml` prints nothing -- instead of the unchanged object -- when
+    # every requested value already matches the file (a total no-op, e.g.
+    # the resolved version happens to equal the one baked into the
+    # manifest). Piping that empty output into `kubectl apply -f -` then
+    # fails with "no objects passed to apply". Applying the original file
+    # directly is correct in that case: there was nothing to patch.
+    local patched
+    patched="$(kubectl set env --local -f "${file}" "${set_args[@]}" -o yaml)"
+    if [ -z "${patched}" ]; then
+        kubectl apply -f "${file}"
+        return
+    fi
+    printf '%s\n' "${patched}" | kubectl apply -f -
 }
 
 # Prints the effective value of the named env var for a k8s manifest file,
