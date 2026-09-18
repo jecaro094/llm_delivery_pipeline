@@ -1,5 +1,7 @@
 # llm_delivery_pipeline
 
+[![CI](https://github.com/jecaro094/llm_delivery_pipeline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jecaro094/llm_delivery_pipeline/actions/workflows/ci.yml?query=branch%3Amain)
+
 > This branch (`main`) implements only the mandatory layer of the exercise. For that layer plus
 > an optional signing/verification layer on top, see the
 > [`layer_2`](https://github.com/jecaro094/llm_delivery_pipeline/tree/layer_2) branch.
