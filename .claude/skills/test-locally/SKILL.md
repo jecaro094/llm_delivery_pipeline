@@ -226,12 +226,12 @@ kubectl -n confidential-models get configmap model-signing-public-key -o name
 kubectl -n confidential-models logs job/model-producer
 
 # 3. Published artifact is opaque without the key
-huggingface-cli download <namespace>/bert-tiny-encrypted versions/<version>/model.tar.enc --local-dir /tmp/check
+hf download <namespace>/bert-tiny-encrypted versions/<version>/model.tar.enc --local-dir /tmp/check
 file /tmp/check/versions/<version>/model.tar.enc      # -> data
 tar tf /tmp/check/versions/<version>/model.tar.enc    # -> fails: not a tar archive
 
 # 4. Signature is published, 64 raw bytes
-huggingface-cli download <namespace>/bert-tiny-encrypted versions/<version>/manifest.json.sig --local-dir /tmp/check
+hf download <namespace>/bert-tiny-encrypted versions/<version>/manifest.json.sig --local-dir /tmp/check
 wc -c /tmp/check/versions/<version>/manifest.json.sig      # -> 64
 
 # 5. Signature verifies against the public key, no decryption key involved
