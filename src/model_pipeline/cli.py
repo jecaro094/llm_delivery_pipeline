@@ -47,12 +47,18 @@ from model_pipeline.settings import Settings
 
 def _add_repo_argument(parser: argparse.ArgumentParser) -> None:
     """Add the shared --repo argument to parser."""
-    parser.add_argument("--repo")
+    parser.add_argument(
+        "--repo",
+        help="Hugging Face Hub repo holding the published artifact (default: MODEL_REPO_ID)",
+    )
 
 
 def _add_version_argument(parser: argparse.ArgumentParser) -> None:
     """Add the shared --version argument to parser."""
-    parser.add_argument("--version")
+    parser.add_argument(
+        "--version",
+        help="artifact version, e.g. 1.0.0 (default: MODEL_VERSION)",
+    )
 
 
 def _add_check_only_argument(parser: argparse.ArgumentParser, *, repo_flag: str, verb: str) -> None:
@@ -66,29 +72,79 @@ def _add_check_only_argument(parser: argparse.ArgumentParser, *, repo_flag: str,
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argument parser with its keygen/produce/list/consume subcommands."""
-    parser = argparse.ArgumentParser(prog="model_pipeline")
+    parser = argparse.ArgumentParser(
+        prog="model_pipeline",
+        epilog="See .env.example at the repository root for the full reference of the "
+        "environment variables named above.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("keygen", help="generate a new base64-encoded AES-256 master key")
+    subparsers.add_parser(
+        "keygen",
+        help="generate a new base64-encoded AES-256 master key",
+        description="Generate a random 32-byte AES-256 master key and print it, "
+        "base64-encoded, to stdout. Pipe the output straight to a file or a Kubernetes "
+        "Secret; it is never written anywhere by this command.",
+    )
 
-    produce_parser = subparsers.add_parser("produce", help="encrypt and publish a model")
-    produce_parser.add_argument("--source-model")
-    produce_parser.add_argument("--target-repo")
+    produce_parser = subparsers.add_parser(
+        "produce",
+        help="encrypt and publish a model",
+        description="Download --source-model from Hugging Face Hub, encrypt it, and publish "
+        "the encrypted artifact plus its manifest to --target-repo. Secrets (HF_TOKEN, the "
+        "encryption key) are never accepted as CLI arguments, only through environment "
+        "variables or a mounted key file, so they cannot leak into shell history or a "
+        "process listing.",
+    )
+    produce_parser.add_argument(
+        "--source-model",
+        help=f"open Hugging Face model to encrypt (default: SOURCE_MODEL, "
+        f"currently {const.DEFAULT_SOURCE_MODEL!r})",
+    )
+    produce_parser.add_argument(
+        "--target-repo",
+        help="Hugging Face Hub repo to publish the encrypted artifact to (default: MODEL_REPO_ID)",
+    )
     _add_version_argument(produce_parser)
-    produce_parser.add_argument("--chunk-size", type=int)
+    produce_parser.add_argument(
+        "--chunk-size",
+        type=int,
+        help=f"AES-GCM chunk size in bytes (default: {const.DEFAULT_CHUNK_SIZE})",
+    )
     _add_check_only_argument(produce_parser, repo_flag="--target-repo", verb="publish")
 
-    list_parser = subparsers.add_parser("list", help="list published artifact versions")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="list published artifact versions",
+        description="Print every artifact version already published under --repo, one per line.",
+    )
     _add_repo_argument(list_parser)
 
     consume_parser = subparsers.add_parser(
-        "consume", help="download, verify, decrypt, and unpack a model"
+        "consume",
+        help="download, verify, decrypt, and unpack a model",
+        description="Download, verify, decrypt, and unpack the artifact published under "
+        "--repo into --workdir. The encryption key is never accepted as a CLI argument, "
+        "only through ENCRYPTION_KEY(_FILE) or --key-file pointing at a mounted "
+        "Kubernetes Secret.",
     )
     _add_repo_argument(consume_parser)
     _add_version_argument(consume_parser)
-    consume_parser.add_argument("--key-file", type=Path)
-    consume_parser.add_argument("--workdir", type=Path)
-    consume_parser.add_argument("--smoke-test", action="store_true")
+    consume_parser.add_argument(
+        "--key-file",
+        type=Path,
+        help="path to a file holding the base64-encoded master key (default: ENCRYPTION_KEY_FILE)",
+    )
+    consume_parser.add_argument(
+        "--workdir",
+        type=Path,
+        help="directory to decrypt the model into (default: MODEL_WORKDIR)",
+    )
+    consume_parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="after decrypting, load the model and run a single fill-mask inference",
+    )
     _add_check_only_argument(consume_parser, repo_flag="--repo", verb="download")
 
     return parser

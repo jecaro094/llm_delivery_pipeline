@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +22,31 @@ from model_pipeline.manifest import (
 )
 from model_pipeline.producer import ProducerError
 from model_pipeline.settings import Settings
+
+
+def test_every_cli_argument_is_documented_with_help() -> None:
+    """Every declared argument, on every subparser, must carry a non-empty help= string."""
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    for sub_parser in subparsers_action.choices.values():
+        for action in sub_parser._actions:
+            if isinstance(action, argparse._HelpAction):
+                continue
+            assert action.help, (
+                f"{sub_parser.prog!r} argument {action.option_strings} has no help text"
+            )
+
+
+def test_every_subcommand_has_a_description() -> None:
+    """Every subcommand must carry a description= shown by `<command> --help`."""
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    for sub_parser in subparsers_action.choices.values():
+        assert sub_parser.description, f"{sub_parser.prog!r} has no description"
 
 
 def test_setting_or_arg_prefers_the_cli_argument_when_given() -> None:
