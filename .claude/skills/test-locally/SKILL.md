@@ -214,7 +214,7 @@ kubectl -n confidential-models get secret model-encryption-key -o jsonpath='{.da
 kubectl -n confidential-models logs job/model-producer
 
 # 3. Published artifact is opaque without the key
-huggingface-cli download <namespace>/bert-tiny-encrypted versions/<version>/model.tar.enc --local-dir /tmp/check
+hf download <namespace>/bert-tiny-encrypted versions/<version>/model.tar.enc --local-dir /tmp/check
 file /tmp/check/versions/<version>/model.tar.enc      # -> data
 tar tf /tmp/check/versions/<version>/model.tar.enc    # -> fails: not a tar archive
 
