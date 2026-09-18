@@ -88,6 +88,7 @@ def produce(
     encrypted_container = crypto.encrypt(plaintext_tar, master_key, chunk_size=chunk_size)
     logger.info("encrypted archive: size_bytes=%d", len(encrypted_container))
 
+    key_fingerprint = signing.public_key_fingerprint(signing_private_key.public_key())
     artifact_manifest = build_manifest(
         created_at=datetime.now(UTC).isoformat(),
         model=ModelInfo(
@@ -110,7 +111,7 @@ def produce(
         ),
         signature=SignatureInfo(
             algorithm=const.SIGNATURE_ALGORITHM_LABEL,
-            public_key_sha256=signing.public_key_fingerprint(signing_private_key.public_key()),
+            public_key_sha256=key_fingerprint,
             signature_path=f"{const.VERSIONS_PREFIX}/{version}/{const.SIGNATURE_FILENAME}",
         ),
         producer=ProducerInfo(tool=const.TOOL_NAME, tool_version=__version__),
@@ -120,6 +121,7 @@ def produce(
     # never re-serialize between signing and upload.
     manifest_bytes = serialize_manifest(artifact_manifest)
     signature_bytes = signing.sign(manifest_bytes, signing_private_key)
+    logger.info("manifest signed: key_fingerprint=%s", key_fingerprint)
 
     try:
         hub.upload_artifact(

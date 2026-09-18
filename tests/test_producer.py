@@ -120,8 +120,28 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
     assert published_manifest.model.source_revision == "deadbeef"
 
 
+def test_produce_logs_the_public_key_fingerprint_it_signed_with(
+    fake_hub: FakeHub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The fingerprint logged when signing must match the manifest's signature.public_key_sha256."""
+    with caplog.at_level(logging.INFO):
+        manifest = produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+    signed_message = next(
+        record.getMessage() for record in caplog.records if "manifest signed" in record.getMessage()
+    )
+    assert manifest.signature.public_key_sha256 in signed_message
+
+
 def test_produce_logs_every_milestone(fake_hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:
-    """produce must log the revision, snapshot, archive/encrypted sizes, and upload completion."""
+    """produce must log the revision, snapshot, archive/encrypted sizes, signing, and upload."""
     with caplog.at_level(logging.INFO):
         produce(
             source_model=SOURCE_MODEL,
@@ -137,6 +157,7 @@ def test_produce_logs_every_milestone(fake_hub: FakeHub, caplog: pytest.LogCaptu
     assert any("downloaded model snapshot" in message for message in messages)
     assert any("packed model snapshot into archive" in message for message in messages)
     assert any("encrypted archive" in message for message in messages)
+    assert any("manifest signed" in message for message in messages)
     assert any("upload complete" in message for message in messages)
 
 
