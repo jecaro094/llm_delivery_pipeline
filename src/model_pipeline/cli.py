@@ -1,4 +1,9 @@
-"""Command-line interface: ``keygen``, ``produce``, ``list``, and ``consume`` subcommands.
+"""Command-line interface: ``keygen``, ``signing-keygen``, ``produce``, ``list``, ``consume``, and
+``verify`` subcommands.
+
+``verify`` is the standalone counterpart of the signature check ``consume`` performs internally:
+it needs neither the decryption key nor a Hugging Face token, since checking that a published
+manifest was signed by the expected producer only requires the public verification key.
 
 Configuration follows the precedence documented in the project plan:
 explicit CLI arguments win over environment variables, which win over

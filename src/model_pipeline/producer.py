@@ -1,10 +1,11 @@
 """Producer orchestration: download the source model, encrypt it, and publish it.
 
 Ties together ``hub`` (network I/O), ``packaging`` (tar), ``crypto``
-(encryption), and ``manifest`` (integrity metadata) into the single flow the
-enunciado describes for the producer side: download the open model, encrypt
-it, upload the encrypted artifact to Hugging Face Hub, and hand back the
-manifest that was published alongside it.
+(encryption), ``manifest`` (integrity metadata), and ``signing`` (signing the
+manifest) into the single flow the enunciado describes for the producer
+side: download the open model, encrypt it, sign the manifest, upload the
+encrypted artifact to Hugging Face Hub, and hand back the manifest that was
+published alongside it.
 """
 
 from __future__ import annotations
