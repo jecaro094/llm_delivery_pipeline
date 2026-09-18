@@ -202,7 +202,7 @@ def test_download_signature_raises_hub_error_for_a_missing_repo_or_version() -> 
             hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
 
     with patch("model_pipeline.hub.hf_hub_download", side_effect=EntryNotFoundError("no entry")):
-        with pytest.raises(hub.HubError):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
             hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
 
 

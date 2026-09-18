@@ -873,3 +873,40 @@ def test_stdout_contains_only_the_manifest_json_for_produce(
     out = capsys.readouterr().out
     assert out.endswith("\n")
     assert json.loads(out) == fake_manifest.model_dump(mode="json")
+
+
+def test_stdout_is_empty_for_verify(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """verify must write nothing to stdout: its result is reported through the log only."""
+    monkeypatch.setenv("SIGNING_PUBLIC_KEY", SIGNING_PUBLIC_KEY_PEM)
+    fake_manifest = _fake_manifest()
+
+    with patch("model_pipeline.cli.verify_published_version", return_value=fake_manifest):
+        exit_code = cli.main(["verify", "--repo", "me/repo", "--version", "1.0.0"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "signature OK" in captured.err
+
+
+def test_stdout_contains_only_the_key_pair_for_signing_keygen(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """signing-keygen's stdout must be exactly the two delimited PEM blocks, nothing else."""
+    exit_code = cli.main(["signing-keygen"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    private_marker = "# private key (keep secret)\n"
+    public_marker = "# public key\n"
+    assert out.startswith(private_marker)
+    private_start = len(private_marker)
+    public_marker_index = out.index(public_marker)
+    private_pem = out[private_start:public_marker_index]
+    public_pem = out[public_marker_index + len(public_marker) :]
+
+    private_key = signing.load_private_key(private_pem.encode("ascii"))
+    public_key = signing.load_public_key(public_pem.encode("ascii"))
+    assert private_key.public_key().public_bytes_raw() == public_key.public_bytes_raw()

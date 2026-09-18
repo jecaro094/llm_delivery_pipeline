@@ -162,19 +162,19 @@ def test_resolve_signing_private_key_translates_an_unreadable_file_to_key_load_e
 
 def test_resolve_signing_private_key_raises_when_nothing_provided() -> None:
     """Resolving with neither a file nor a value must fail explicitly."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="neither key_file nor key_value"):
         keys.resolve_signing_private_key(key_file=None, key_value=None)
 
 
 def test_resolve_signing_private_key_rejects_malformed_pem() -> None:
     """A malformed PEM value must be rejected as a KeyLoadError, not a raw SignatureError."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="could not parse PEM as a private key"):
         keys.resolve_signing_private_key(key_file=None, key_value="not a pem file")
 
 
 def test_resolve_signing_private_key_rejects_a_public_key_pem() -> None:
     """A public key PEM offered where a private key is expected must be rejected structurally."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="could not parse PEM as a private key"):
         keys.resolve_signing_private_key(
             key_file=None, key_value=test_const.TEST_SIGNING_PUBLIC_KEY_PEM.decode("ascii")
         )
@@ -261,19 +261,19 @@ def test_resolve_signing_public_key_translates_an_unreadable_file_to_key_load_er
 
 def test_resolve_signing_public_key_raises_when_nothing_provided() -> None:
     """Resolving with neither a file nor a value must fail explicitly."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="neither key_file nor key_value"):
         keys.resolve_signing_public_key(key_file=None, key_value=None)
 
 
 def test_resolve_signing_public_key_rejects_malformed_pem() -> None:
     """A malformed PEM value must be rejected as a KeyLoadError, not a raw SignatureError."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="could not parse PEM as a public key"):
         keys.resolve_signing_public_key(key_file=None, key_value="not a pem file")
 
 
 def test_resolve_signing_public_key_rejects_a_private_key_pem() -> None:
     """A private key PEM offered where a public key is expected must be rejected structurally."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="could not parse PEM as a public key"):
         keys.resolve_signing_public_key(
             key_file=None, key_value=test_const.TEST_SIGNING_PRIVATE_KEY_PEM.decode("ascii")
         )

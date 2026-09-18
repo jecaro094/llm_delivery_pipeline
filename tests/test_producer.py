@@ -8,6 +8,7 @@ runs end to end without any network access.
 
 from __future__ import annotations
 
+import base64
 import logging
 import shutil
 from pathlib import Path
@@ -161,8 +162,13 @@ def test_produce_logs_every_milestone(fake_hub: FakeHub, caplog: pytest.LogCaptu
     assert any("upload complete" in message for message in messages)
 
 
-def test_produce_never_logs_the_token(fake_hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:
-    """No log record emitted by a full produce() run may contain the Hugging Face token."""
+def test_produce_never_logs_any_of_its_three_secrets(
+    fake_hub: FakeHub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No log record emitted by a full produce() run may contain the token, master key, or PEM."""
+    base64_master_key = base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    signing_key_pem = test_const.TEST_SIGNING_PRIVATE_KEY_PEM.decode("ascii")
+    pem_lines = [line for line in signing_key_pem.splitlines() if line]
     with caplog.at_level(logging.DEBUG):
         produce(
             source_model=SOURCE_MODEL,
@@ -173,7 +179,10 @@ def test_produce_never_logs_the_token(fake_hub: FakeHub, caplog: pytest.LogCaptu
             hf_token=FAKE_TOKEN,
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
-    assert all(FAKE_TOKEN not in record.getMessage() for record in caplog.records)
+    messages = [record.getMessage() for record in caplog.records]
+    assert all(FAKE_TOKEN not in message for message in messages)
+    assert all(base64_master_key not in message for message in messages)
+    assert all(pem_line not in message for pem_line in pem_lines for message in messages)
 
 
 def test_produce_publishes_three_files_and_the_manifest_is_the_exact_signed_bytes(
