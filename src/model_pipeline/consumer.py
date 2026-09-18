@@ -2,8 +2,8 @@
 
 Ties together ``hub`` (network I/O), ``signing`` (signature verification),
 ``manifest`` (integrity metadata), ``crypto`` (decryption), and ``packaging``
-(tar) into the flow the enunciado describes for the consumer side: download
-the manifest and its detached signature, verify the signature *before*
+(tar) into the flow the consumer side follows: download the manifest and its
+detached signature, verify the signature *before*
 parsing the manifest or touching the decryption key, then download the
 encrypted artifact, verify the artifact hash before decrypting and the
 plaintext hash after, and unpack the recovered model snapshot into a working

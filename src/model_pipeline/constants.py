@@ -127,7 +127,7 @@ NOISY_LOGGERS = ("huggingface_hub", "httpx", "urllib3", "filelock")
 
 # --- Source model validation ---
 
-# Some published Hugging Face repos (see PLAN.md, decision #1) predate the
+# Some published Hugging Face repos (see docs/decisions.md, decision 1) predate the
 # convention of recording an architecture identifier in their config file
 # and omit it entirely; transformers then cannot auto-detect the model
 # class, which is otherwise only discovered once the consumer tries to load

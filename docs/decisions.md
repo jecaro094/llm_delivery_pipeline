@@ -240,6 +240,14 @@ therefore substitutable — an attacker could keep a genuine artifact and rewrit
 provenance. Decision 7 already anticipated this move: the manifest was designed from the start so
 that one signature over it would be enough.
 
+This departs from a literal reading of "sign the encrypted artifact": no signature is computed
+directly over `model.tar.enc`'s bytes. The departure is intentional, not an oversight, because the
+manifest's `artifact.sha256` field is exactly the binding between the two — verifying the manifest
+signature and then re-hashing the downloaded artifact against `artifact.sha256` (which the consumer
+already does for integrity, independently of signing) gives the same guarantee a direct signature
+over the artifact bytes would, while also covering the metadata a bare artifact signature would
+leave unprotected.
+
 ## 15. Detached signature, published as its own file
 
 **Alternatives considered**: a `signature` field inside `manifest.json`; a signature block appended

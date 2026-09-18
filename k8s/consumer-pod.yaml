@@ -42,7 +42,7 @@ spec:
           value: /etc/model-signing-pub/public-key.pem
       volumeMounts:
         # Mounted read-only: the consumer only ever reads the decryption
-        # key, it never needs to write it (see PLAN.md, decision #6).
+        # key, it never needs to write it (see docs/decisions.md, decision 6).
         - name: encryption-key
           mountPath: /etc/model-keys
           readOnly: true
@@ -52,7 +52,7 @@ spec:
           mountPath: /etc/model-signing-pub
           readOnly: true
         # tmpfs: the decrypted model is written here and never touches the
-        # node's disk (see PLAN.md, decision #5).
+        # node's disk (see docs/decisions.md, decision 5).
         - name: model-workdir
           mountPath: /mnt/model
         - name: tmp

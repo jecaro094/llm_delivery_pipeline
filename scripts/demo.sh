@@ -15,7 +15,7 @@
 # actually encrypted and signed with).
 #
 # The producer refuses to overwrite a version that already exists (artifact
-# versions are immutable, see PLAN.md, decision 7). Rather than let that
+# versions are immutable, see docs/decisions.md, decision 7). Rather than let that
 # surface as a Kubernetes Job stuck retrying until kubectl's wait times out,
 # this script checks the target version against the target repo itself
 # (`model_pipeline produce/consume --check-only`, run locally via the
