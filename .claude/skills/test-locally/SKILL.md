@@ -52,11 +52,25 @@ login`'s cached login. If neither is available, the command fails with a clear e
 `hf auth login`; relay that error rather than prompting for a token by hand. Option 3 is the one
 exception: its producer Job runs in a container with no access to a host login cache, so it
 genuinely needs `HF_TOKEN` set in the environment before `scripts/demo.sh` runs — check whether
-it's already set before asking. If the user is logged in via `hf auth login`, suggest running
-`export HF_TOKEN=$(hf auth token)` themselves so the value never has to be typed or pasted at
-all; only if they are not logged in does this need a token from
-https://huggingface.co/settings/tokens, and even then it's the user who runs the `export`, never
-something to relay through chat.
+it's already set before asking.
+
+Getting that value into the environment safely takes care, because of two things that are easy to
+get wrong: shell state (env vars) does not persist between separate tool calls — not between two
+`!`-prefixed local commands, and not between two of Claude's own Bash tool calls either, since each
+one starts a fresh shell — and a token typed or pasted into the chat (including inside a `!`
+command's text) stays in the conversation transcript indefinitely. So:
+
+- Never tell the user to `export HF_TOKEN=...` in one step and run `scripts/demo.sh` in a later,
+  separate step — the export will silently not apply, exactly the way it looks like the token was
+  "not detected." Always combine setting the variable and running the script that needs it in a
+  single command.
+- Never ask the user to paste the raw token value into the chat, and never place its literal value
+  inside a command whose text becomes part of the conversation. Instead, ask them to save it into a
+  local file of their own outside the repository (e.g. `~/.hf-token`, so there's no risk of it ever
+  being git-added) using their own editor or `hf auth login` — never by having them echo the value
+  through a command you can see — and then run the demo reading from that path, e.g.
+  `HF_TOKEN="$(cat ~/.hf-token)" ./scripts/demo.sh` as one Bash tool call. The file path appears in
+  the command; the token's value never does.
 
 ## Running each option
 
@@ -147,8 +161,7 @@ instead, exactly as the script's own message does. Check whether `HF_TOKEN` is a
 environment before asking the user for it. Run the demo:
 
 ```bash
-export HF_TOKEN=<token>
-./scripts/demo.sh
+HF_TOKEN="$(cat ~/.hf-token)" ./scripts/demo.sh
 ```
 
 `scripts/demo.sh` starts minikube if needed, builds and loads both images, then — before touching
