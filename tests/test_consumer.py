@@ -234,6 +234,45 @@ def test_consume_reports_a_missing_artifact_as_a_consumer_error(
         )
 
 
+def test_consume_reports_a_missing_encrypted_artifact_as_a_consumer_error(
+    monkeypatch: pytest.MonkeyPatch, fake_model_dir: Path, tmp_path: Path
+) -> None:
+    """consume must raise ConsumerError, not leak HubError, when the artifact download fails."""
+    artifact_manifest, _ = _build_manifest_and_artifact(fake_model_dir)
+
+    class MissingArtifactHub:
+        def download_manifest(self, repo_id: str, version: str) -> bytes:
+            return manifest_module.serialize_manifest(artifact_manifest)
+
+        def download_artifact(self, repo_id: str, version: str) -> bytes:
+            raise HubError(f"no artifact published for {repo_id!r} version {version!r}")
+
+    monkeypatch.setattr(consumer, "hub", MissingArtifactHub())
+
+    with pytest.raises(ConsumerError, match="no artifact published"):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+
+
+def test_resolve_consume_version_reports_a_list_failure_as_a_consumer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_consume_version must raise ConsumerError, not leak HubError, on a lookup failure."""
+
+    class BrokenHub:
+        def list_versions(self, repo_id: str) -> list[str]:
+            raise HubError(f"could not list versions for {repo_id!r}")
+
+    monkeypatch.setattr(consumer, "hub", BrokenHub())
+
+    with pytest.raises(ConsumerError, match="could not list versions"):
+        resolve_consume_version(REPO_ID, VERSION, interactive=False)
+
+
 def test_resolve_consume_version_returns_a_published_version_unchanged(
     fake_hub_with_valid_artifact: FakeHub,
 ) -> None:

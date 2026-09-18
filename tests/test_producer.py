@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 import tests.constants as test_const
 
+from model_pipeline import hub as hub_module
 from model_pipeline import manifest as manifest_module
 from model_pipeline import producer
 from model_pipeline.producer import ProducerError, produce, resolve_produce_version
@@ -27,6 +28,8 @@ TARGET_REPO = "me/bert-tiny-encrypted"
 
 class FakeHub:
     """In-memory-on-disk stand-in for model_pipeline.hub, backed by tmp_path."""
+
+    HubError = hub_module.HubError
 
     def __init__(self, source_dir: Path, remote_dir: Path) -> None:
         """Store the fixture source model directory and the fake remote repo directory."""
@@ -235,6 +238,93 @@ def test_produce_error_omits_a_suggestion_when_no_version_is_dotted_integers(
             chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
         )
     assert "next available version" not in str(exc_info.value)
+
+
+def test_produce_reports_a_repo_setup_failure_as_a_producer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """produce must raise ProducerError, not leak HubError, when repo setup fails."""
+
+    class BrokenHub:
+        HubError = hub_module.HubError
+
+        def ensure_public_repo(self, repo_id: str, token: str) -> None:
+            raise hub_module.HubError(f"could not create {repo_id!r}")
+
+    monkeypatch.setattr(producer, "hub", BrokenHub())
+
+    with pytest.raises(ProducerError, match="could not create"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+
+
+def test_produce_reports_a_download_failure_as_a_producer_error(
+    fake_hub: FakeHub,
+) -> None:
+    """produce must raise ProducerError, not leak HubError, when the source model download fails."""
+
+    def _broken_resolve_model_revision(repo_id: str, revision: str | None = None) -> str:
+        """Always raise HubError, simulating an unreachable source model repo."""
+        raise hub_module.HubError(f"could not resolve revision for {repo_id!r}")
+
+    fake_hub.resolve_model_revision = _broken_resolve_model_revision  # type: ignore[method-assign]
+
+    with pytest.raises(ProducerError, match="could not resolve revision"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+
+
+def test_produce_reports_an_upload_failure_as_a_producer_error(
+    fake_hub: FakeHub,
+) -> None:
+    """produce must raise ProducerError, not leak HubError, when the artifact upload fails."""
+
+    def _broken_upload_artifact(
+        repo_id: str, version: str, *, artifact_bytes: bytes, manifest_bytes: bytes, token: str
+    ) -> None:
+        """Always raise HubError, simulating a failed upload to the target repo."""
+        raise hub_module.HubError(f"could not upload to {repo_id!r}")
+
+    fake_hub.upload_artifact = _broken_upload_artifact  # type: ignore[method-assign]
+
+    with pytest.raises(ProducerError, match="could not upload"):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+
+
+def test_resolve_produce_version_reports_a_list_failure_as_a_producer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_produce_version must raise ProducerError, not leak HubError, on a lookup failure."""
+
+    class BrokenHub:
+        HubError = hub_module.HubError
+
+        def list_versions(self, repo_id: str) -> list[str]:
+            raise hub_module.HubError(f"could not list versions for {repo_id!r}")
+
+    monkeypatch.setattr(producer, "hub", BrokenHub())
+
+    with pytest.raises(ProducerError, match="could not list versions"):
+        resolve_produce_version(TARGET_REPO, "1.0.0", interactive=False)
 
 
 def test_resolve_produce_version_returns_a_free_version_unchanged(fake_hub: FakeHub) -> None:

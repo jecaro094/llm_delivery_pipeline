@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import tests.constants as test_const
@@ -86,6 +86,23 @@ def test_fail_prints_the_command_and_reason_and_returns_one(
         exit_code = cli._fail("produce", ProducerError("boom"))
     assert exit_code == 1
     assert "produce failed: boom" in caplog.records[-1].getMessage()
+
+
+def test_resolve_version_returns_the_resolved_version_on_an_interactive_terminal() -> None:
+    """_resolve_version must return (resolved, None) on an interactive, non-check-only run."""
+    resolver = MagicMock(return_value="1.0.1")
+    with patch("sys.stdin.isatty", return_value=True):
+        resolved, exit_code = cli._resolve_version(
+            resolver,
+            "me/repo",
+            "1.0.0",
+            check_only=False,
+            command="produce",
+            error_type=ProducerError,
+        )
+    assert resolved == "1.0.1"
+    assert exit_code is None
+    resolver.assert_called_once_with("me/repo", "1.0.0", interactive=True)
 
 
 def test_keygen_prints_a_valid_base64_32_byte_key(capsys: pytest.CaptureFixture[str]) -> None:
