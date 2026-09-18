@@ -19,11 +19,13 @@ Never guess which option to run. Ask the user which one they want, using this fr
 - **Option 1 — test suite only.** Fastest, no external dependencies beyond Python. Proves the code
   (including the cryptographic core) is correct, not that the live pipeline works. ~1 min.
 - **Option 2 — CLI without Kubernetes.** Runs the real producer/consumer against the real Hugging
-  Face Hub. Needs a Hugging Face **write** token (`HF_TOKEN`). Proves the pipeline logic works
-  end-to-end, but skips the Secret mount and in-memory decryption. ~3-5 min.
+  Face Hub. Needs a Hugging Face **write** token, picked up automatically from `hf auth login` --
+  no need to ask the user for one. Proves the pipeline logic works end-to-end, but skips the
+  Secret mount and in-memory decryption. ~3-5 min.
 - **Option 3 — full Kubernetes demo (`scripts/demo.sh`).** Needs Docker, minikube, `kubectl`, and
-  the same `HF_TOKEN`. The only option that exercises the actual architecture (Job, Secret, Pod,
-  `tmpfs` decryption) described in the README. ~8-10 min.
+  an explicit `HF_TOKEN`: the producer Job runs in its own container, with no access to a host
+  login cache, so `hf auth login` alone is not enough here. The only option that exercises the
+  actual architecture (Job, Secret, Pod, `tmpfs` decryption) described in the README. ~8-10 min.
 
 If the user has no Hugging Face account, no write token, or is short on time (e.g. an interviewer
 evaluating the repository), mention the **pinned demo artifact fast path** as an alternative to
@@ -37,11 +39,23 @@ directly without asking. Otherwise, ask.
 
 ## Asking for required inputs
 
-Never assume, invent, or reuse a stale value for anything an option needs to run (a token, a
-target repo, a version, …). If the value isn't already clear from the current conversation, stop
-and ask the user for it interactively in the terminal before running the command that needs it —
-one value at a time is fine; don't block on gathering all of them upfront. Option 1 needs no
-external input, so this only applies to Options 2 and 3.
+Never assume, invent, or reuse a stale value for anything an option needs to run (a target repo,
+a version, an `HF_TOKEN` for Option 3, …). If the value isn't already clear from the current
+conversation, stop and ask the user for it interactively in the terminal before running the
+command that needs it — one value at a time is fine; don't block on gathering all of them
+upfront. Option 1 needs no external input, so this only applies to Options 2 and 3.
+
+Never ask the user to type or paste a Hugging Face token. Option 2 needs no token input at all —
+`produce` resolves it itself, from `HF_TOKEN`/`HF_TOKEN_FILE` if set, otherwise from `hf auth
+login`'s cached login. If neither is available, the command fails with a clear error naming
+`hf auth login`; relay that error rather than prompting for a token by hand. Option 3 is the one
+exception: its producer Job runs in a container with no access to a host login cache, so it
+genuinely needs `HF_TOKEN` set in the environment before `scripts/demo.sh` runs — check whether
+it's already set before asking. If the user is logged in via `hf auth login`, suggest running
+`export HF_TOKEN=$(hf auth token)` themselves so the value never has to be typed or pasted at
+all; only if they are not logged in does this need a token from
+https://huggingface.co/settings/tokens, and even then it's the user who runs the `export`, never
+something to relay through chat.
 
 ## Running each option
 
@@ -80,20 +94,23 @@ python -m pytest
 
 ### Option 2 — CLI without Kubernetes
 
-Needs three things that are never known in advance — a Hugging Face **write** token
-(`HF_TOKEN`), a target repo (their own namespace, e.g. `<their-namespace>/bert-tiny-encrypted`),
-and a version string (e.g. `1.0.0`). Check whether `HF_TOKEN` is already set in the environment
-before asking for it; ask the user for whichever of the three aren't already resolved, rather than
-assuming a value for any of them.
+Needs two things that are never known in advance — a target repo (their own namespace, e.g.
+`<their-namespace>/bert-tiny-encrypted`) and a version string (e.g. `1.0.0`). Ask the user for
+whichever of the two aren't already resolved, rather than assuming a value for either. The
+Hugging Face token is not one of them: `produce` resolves it itself from `HF_TOKEN`/
+`HF_TOKEN_FILE` if set, otherwise from a cached `hf auth login`. If neither is available, run `hf
+auth login` (once) before retrying, rather than asking the user for a token to type or paste.
 
 ```bash
 python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[producer,consumer,dev]"
 
+hf auth login   # only if produce reports no token available
+
 python -m model_pipeline keygen > .encryption-key
 
-HF_TOKEN=<token> ENCRYPTION_KEY_FILE=.encryption-key \
+ENCRYPTION_KEY_FILE=.encryption-key \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <namespace>/bert-tiny-encrypted \

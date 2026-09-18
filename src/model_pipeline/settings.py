@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", protected_namespaces=())
 
     hf_token: str | None = None
+    hf_token_file: Path | None = None
     encryption_key: str | None = None
     encryption_key_file: Path | None = None
     model_repo_id: str | None = None

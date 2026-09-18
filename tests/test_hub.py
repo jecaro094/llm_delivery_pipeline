@@ -18,6 +18,13 @@ def _http_error(message: str) -> HfHubHTTPError:
     return HfHubHTTPError(message, response=MagicMock())
 
 
+def test_get_cached_token_returns_huggingface_hubs_cached_token() -> None:
+    """get_cached_token must return whatever huggingface_hub.get_token() reports."""
+    with patch("model_pipeline.hub.get_token", return_value="cached-token") as mock_get_token:
+        assert hub.get_cached_token() == "cached-token"
+    mock_get_token.assert_called_once_with()
+
+
 def test_resolve_model_revision_returns_commit_sha() -> None:
     """resolve_model_revision must return the sha reported by HfApi.model_info."""
     with patch("model_pipeline.hub.HfApi") as mock_api_cls:

@@ -39,7 +39,7 @@ from model_pipeline.consumer import (
     load_and_predict,
     resolve_consume_version,
 )
-from model_pipeline.keys import KeyLoadError, resolve_key
+from model_pipeline.keys import KeyLoadError, resolve_hf_token, resolve_key
 from model_pipeline.logging_config import configure_logging
 from model_pipeline.manifest import ManifestError, serialize_manifest
 from model_pipeline.packaging import PackagingError
@@ -266,8 +266,14 @@ def cmd_produce(args: argparse.Namespace) -> int:
     if exit_code is not None:
         return exit_code
 
-    if not settings.hf_token:
-        logger.error("HF_TOKEN must be set to publish to Hugging Face Hub")
+    try:
+        hf_token = resolve_hf_token(
+            token_file=settings.hf_token_file,
+            token_value=settings.hf_token,
+            fallback_token=hub.get_cached_token(),
+        )
+    except KeyLoadError as exc:
+        logger.error("could not resolve a Hugging Face token: %s", exc)
         return 2
 
     try:
@@ -284,7 +290,7 @@ def cmd_produce(args: argparse.Namespace) -> int:
             target_repo=target_repo,
             version=version,
             master_key=master_key,
-            hf_token=settings.hf_token,
+            hf_token=hf_token,
             chunk_size=chunk_size,
         )
     except ProducerError as exc:

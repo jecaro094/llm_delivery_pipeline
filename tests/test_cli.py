@@ -152,6 +152,40 @@ def test_produce_requires_hf_token(
     assert "HF_TOKEN" in capsys.readouterr().err
 
 
+def test_produce_falls_back_to_a_cached_login_token_when_hf_token_is_unset(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """produce must use huggingface_hub.get_token()'s cached login when HF_TOKEN is unset."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    monkeypatch.setattr("model_pipeline.cli.hub.get_cached_token", lambda: "cached-token")
+    fake_manifest = _fake_manifest()
+    with patch("model_pipeline.cli.produce", return_value=fake_manifest) as mock_produce:
+        exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 0
+    assert mock_produce.call_args.kwargs["hf_token"] == "cached-token"  # noqa: S105
+
+
+def test_produce_reads_the_token_from_hf_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """produce must prefer HF_TOKEN_FILE over HF_TOKEN when both are set."""
+    token_file = tmp_path / "hf-token"
+    token_file.write_text("from-file\n", encoding="utf-8")
+    monkeypatch.setenv("HF_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("HF_TOKEN", "from-env-value")  # noqa: S105
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    fake_manifest = _fake_manifest()
+    with patch("model_pipeline.cli.produce", return_value=fake_manifest) as mock_produce:
+        exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 0
+    assert mock_produce.call_args.kwargs["hf_token"] == "from-file"  # noqa: S105
+
+
 def test_produce_requires_encryption_key(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -123,9 +123,11 @@ logic from the deployment layer.
 
 **Dependencies needed:**
 - Python 3.12+
-- A Hugging Face account with a **write** token (`HF_TOKEN`), to publish to a repo of your own (e.g.
+- A Hugging Face account with a **write** token, to publish to a repo of your own (e.g.
   `<your-namespace>/bert-tiny-encrypted`). The consumer step does not need a token: the target repo is
-  public (see decision 8 in `docs/decisions.md`).
+  public (see decision 8 in `docs/decisions.md`). Run `hf auth login` once beforehand and
+  `produce` picks up the cached token automatically -- no need to type or export it; `HF_TOKEN`
+  (or `HF_TOKEN_FILE`, for a mounted-file token) still works and takes precedence if set.
 - No Docker, no minikube
 
 ```bash
@@ -133,9 +135,11 @@ python3.12 -m venv .venv
 source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -e ".[producer,consumer,dev]"
 
+hf auth login   # once; produce picks up the cached token from here on
+
 python -m model_pipeline keygen > .encryption-key   # base64 AES-256 key, local file only
 
-HF_TOKEN=<your token> ENCRYPTION_KEY_FILE=.encryption-key \
+ENCRYPTION_KEY_FILE=.encryption-key \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <your-namespace>/bert-tiny-encrypted \
@@ -166,8 +170,10 @@ described at the top of this README, not just the underlying Python logic.
 **Dependencies needed:**
 - Docker (to build both images)
 - [minikube](https://minikube.sigs.k8s.io/) and `kubectl`
-- A Hugging Face account with a **write** token (`HF_TOKEN`), same as Option 2. The consumer Pod does
-  not need one.
+- A Hugging Face account with a **write** token, same as Option 2. Unlike Option 2, `hf auth
+  login`'s cached token is not enough here: the producer Job runs inside its own container, with
+  no access to your host's login cache, so it needs the token passed in explicitly as `HF_TOKEN`.
+  The consumer Pod does not need one.
 - Enough local resources to run minikube and build/load two images that bundle `torch`/`transformers`
 
 ```bash

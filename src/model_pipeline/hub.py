@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, get_token, hf_hub_download, snapshot_download
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 
 import model_pipeline.constants as const
@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 class HubError(Exception):
     """Raised when a Hugging Face Hub operation fails or returns an unusable result."""
+
+
+def get_cached_token() -> str | None:
+    """Return the token cached locally by `hf auth login`, if any, or None.
+
+    Isolated behind this module, like every other huggingface_hub call, so
+    keys.py -- where the rest of the token/key resolution logic lives --
+    stays free of any huggingface_hub dependency.
+    """
+    return get_token()
 
 
 def resolve_model_revision(repo_id: str, revision: str | None = None) -> str:

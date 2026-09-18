@@ -59,6 +59,46 @@ def resolve_key(*, key_file: Path | None, key_value: str | None) -> bytes:
     raise KeyLoadError("no key material provided: neither key_file nor key_value was set")
 
 
+def load_token_from_file(path: Path) -> str:
+    """Read and strip the Hugging Face token stored at path.
+
+    Raises KeyLoadError, instead of a raw OSError, on the same
+    fsGroup-related failure mode :func:`load_key_from_file` guards against.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise KeyLoadError(f"could not read token file {path}: {exc}") from exc
+    stripped = raw.strip()
+    if not stripped:
+        raise KeyLoadError(f"token file {path} is empty")
+    return stripped
+
+
+def resolve_hf_token(
+    *, token_file: Path | None, token_value: str | None, fallback_token: str | None = None
+) -> str:
+    """Resolve the Hugging Face token from a mounted file, a raw value, or a cached login.
+
+    Precedence: token_file (HF_TOKEN_FILE) takes priority over token_value
+    (HF_TOKEN), which takes priority over fallback_token -- the token
+    ``huggingface_hub.get_token()`` reports from a prior ``hf auth login``,
+    passed in by the caller since this module stays free of any
+    ``huggingface_hub`` dependency. Raises KeyLoadError when none of the
+    three yields a token, so an operator who has neither set HF_TOKEN nor
+    logged in gets one clear error instead of an opaque 401 later.
+    """
+    if token_file is not None:
+        return load_token_from_file(token_file)
+    if token_value is not None:
+        return token_value.strip()
+    if fallback_token is not None:
+        return fallback_token.strip()
+    raise KeyLoadError(
+        "no Hugging Face token available: set HF_TOKEN, HF_TOKEN_FILE, or run `hf auth login`"
+    )
+
+
 def _require_key_size(key: bytes) -> None:
     """Raise KeyLoadError unless the decoded key has the required AES-256 length."""
     if len(key) != const.KEY_SIZE:
