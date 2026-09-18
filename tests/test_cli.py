@@ -23,6 +23,41 @@ from model_pipeline.producer import ProducerError
 from model_pipeline.settings import Settings
 
 
+def test_setting_or_arg_prefers_the_cli_argument_when_given() -> None:
+    """_setting_or_arg must return the CLI argument when it is not None."""
+    assert cli._setting_or_arg("from-arg", "from-settings") == "from-arg"
+
+
+def test_setting_or_arg_falls_back_to_settings_when_arg_is_none() -> None:
+    """_setting_or_arg must return the settings value when the CLI argument is None."""
+    assert cli._setting_or_arg(None, "from-settings") == "from-settings"
+
+
+def test_require_returns_none_when_nothing_is_missing() -> None:
+    """_require must return None when every value is present."""
+    assert cli._require({"--repo": "me/repo", "--version": "1.0.0"}, "produce") is None
+
+
+def test_require_reports_every_missing_value_together(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """_require must name every missing value in one message and return exit code 2."""
+    exit_code = cli._require({"--target-repo": None, "--version": None}, "produce")
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--target-repo" in err
+    assert "--version" in err
+
+
+def test_fail_prints_the_command_and_reason_and_returns_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """_fail must print '<command> failed: <exc>' and return exit code 1."""
+    exit_code = cli._fail("produce", ProducerError("boom"))
+    assert exit_code == 1
+    assert "produce failed: boom" in capsys.readouterr().err
+
+
 def test_keygen_prints_a_valid_base64_32_byte_key(capsys: pytest.CaptureFixture[str]) -> None:
     """keygen must print a base64 string that decodes to exactly 32 bytes."""
     exit_code = cli.main(["keygen"])

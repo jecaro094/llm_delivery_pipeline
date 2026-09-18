@@ -27,6 +27,7 @@ import argparse
 import base64
 import secrets
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import model_pipeline.constants as const
@@ -44,6 +45,25 @@ from model_pipeline.producer import ProducerError, produce, resolve_produce_vers
 from model_pipeline.settings import Settings
 
 
+def _add_repo_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --repo argument to parser."""
+    parser.add_argument("--repo")
+
+
+def _add_version_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --version argument to parser."""
+    parser.add_argument("--version")
+
+
+def _add_check_only_argument(parser: argparse.ArgumentParser, *, repo_flag: str, verb: str) -> None:
+    """Add the shared --check-only flag to parser, phrased for repo_flag and verb."""
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help=f"only resolve/validate --version against {repo_flag} and print it; {verb} nothing",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argument parser with its keygen/produce/list/consume subcommands."""
     parser = argparse.ArgumentParser(prog="model_pipeline")
@@ -54,32 +74,86 @@ def build_parser() -> argparse.ArgumentParser:
     produce_parser = subparsers.add_parser("produce", help="encrypt and publish a model")
     produce_parser.add_argument("--source-model")
     produce_parser.add_argument("--target-repo")
-    produce_parser.add_argument("--version")
+    _add_version_argument(produce_parser)
     produce_parser.add_argument("--chunk-size", type=int)
-    produce_parser.add_argument(
-        "--check-only",
-        action="store_true",
-        help="only resolve/validate --version against --target-repo and print it; publish nothing",
-    )
+    _add_check_only_argument(produce_parser, repo_flag="--target-repo", verb="publish")
 
     list_parser = subparsers.add_parser("list", help="list published artifact versions")
-    list_parser.add_argument("--repo")
+    _add_repo_argument(list_parser)
 
     consume_parser = subparsers.add_parser(
         "consume", help="download, verify, decrypt, and unpack a model"
     )
-    consume_parser.add_argument("--repo")
-    consume_parser.add_argument("--version")
+    _add_repo_argument(consume_parser)
+    _add_version_argument(consume_parser)
     consume_parser.add_argument("--key-file", type=Path)
     consume_parser.add_argument("--workdir", type=Path)
     consume_parser.add_argument("--smoke-test", action="store_true")
-    consume_parser.add_argument(
-        "--check-only",
-        action="store_true",
-        help="only resolve/validate --version against --repo and print it; download nothing",
-    )
+    _add_check_only_argument(consume_parser, repo_flag="--repo", verb="download")
 
     return parser
+
+
+def _setting_or_arg[T](arg_value: T | None, settings_value: T) -> T:
+    """Return arg_value when the CLI argument was given; otherwise settings_value.
+
+    Implements the precedence used throughout the pipeline: an explicit
+    --flag always overrides the corresponding environment variable or
+    default captured in settings.
+    """
+    return arg_value if arg_value is not None else settings_value
+
+
+def _require(values: dict[str, object | None], command: str) -> int | None:
+    """Report every value in values that is still None, at once, and return exit code 2.
+
+    Returns None once nothing is missing, so callers can resolve several
+    required values up front and report all the gaps in a single message
+    instead of making the operator fix them one run at a time.
+    """
+    missing = [flag for flag, value in values.items() if value is None]
+    if not missing:
+        return None
+    print(f"{command} requires {' and '.join(missing)} (or their env vars)", file=sys.stderr)
+    return 2
+
+
+def _resolve_version(
+    resolver: Callable[..., str],
+    repo: str,
+    version: str,
+    *,
+    check_only: bool,
+    command: str,
+    error_type: type[Exception],
+) -> tuple[str, int | None]:
+    """Resolve version against repo via resolver, honoring --check-only and interactive terminals.
+
+    Skipped entirely when neither check_only nor an interactive terminal
+    applies, so an unattended run (a Kubernetes Job/Pod, CI) leaves version
+    resolution to the producer/consumer flow itself rather than blocking on
+    input that will never arrive. Returns (version, exit_code): exit_code is
+    None when the caller should proceed with the returned version, and an
+    exit code the caller must return immediately otherwise (0 once
+    --check-only has printed the resolved version, 1 on a resolution
+    failure from error_type).
+    """
+    if not check_only and not sys.stdin.isatty():
+        return version, None
+    try:
+        resolved = resolver(repo, version, interactive=sys.stdin.isatty())
+    except error_type as exc:
+        return version, _fail(command, exc)
+    if check_only:
+        print(resolved)
+        return resolved, 0
+    return resolved, None
+
+
+def _fail(command: str, exc: Exception) -> int:
+    """Print '<command> failed: <exc>' to stderr and return the exit code for that failure."""
+    print(f"{command} failed: {exc}", file=sys.stderr)
+    return 1
 
 
 def _resolve_master_key(settings: Settings, *, key_file_override: Path | None = None) -> bytes:
@@ -104,22 +178,24 @@ def cmd_produce(args: argparse.Namespace) -> int:
     """Resolve produce configuration and secrets, then run the producer flow."""
     settings = Settings()
 
-    source_model = args.source_model if args.source_model is not None else settings.source_model
-    target_repo = args.target_repo if args.target_repo is not None else settings.model_repo_id
-    version = args.version if args.version is not None else settings.model_version
-    if target_repo is None or version is None:
-        print("produce requires --target-repo and --version (or their env vars)", file=sys.stderr)
-        return 2
+    source_model = _setting_or_arg(args.source_model, settings.source_model)
+    target_repo = _setting_or_arg(args.target_repo, settings.model_repo_id)
+    version = _setting_or_arg(args.version, settings.model_version)
+    exit_code = _require({"--target-repo": target_repo, "--version": version}, "produce")
+    if exit_code is not None:
+        return exit_code
+    assert target_repo is not None and version is not None  # noqa: S101 -- _require checked above
 
-    if args.check_only or sys.stdin.isatty():
-        try:
-            version = resolve_produce_version(target_repo, version, interactive=sys.stdin.isatty())
-        except ProducerError as exc:
-            print(f"produce failed: {exc}", file=sys.stderr)
-            return 1
-        if args.check_only:
-            print(version)
-            return 0
+    version, exit_code = _resolve_version(
+        resolve_produce_version,
+        target_repo,
+        version,
+        check_only=args.check_only,
+        command="produce",
+        error_type=ProducerError,
+    )
+    if exit_code is not None:
+        return exit_code
 
     if not settings.hf_token:
         print("HF_TOKEN must be set to publish to Hugging Face Hub", file=sys.stderr)
@@ -131,7 +207,7 @@ def cmd_produce(args: argparse.Namespace) -> int:
         print(f"could not load the encryption key: {exc}", file=sys.stderr)
         return 2
 
-    chunk_size = args.chunk_size if args.chunk_size is not None else const.DEFAULT_CHUNK_SIZE
+    chunk_size = _setting_or_arg(args.chunk_size, const.DEFAULT_CHUNK_SIZE)
 
     try:
         artifact_manifest = produce(
@@ -143,8 +219,7 @@ def cmd_produce(args: argparse.Namespace) -> int:
             chunk_size=chunk_size,
         )
     except ProducerError as exc:
-        print(f"produce failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail("produce", exc)
 
     sys.stdout.buffer.write(serialize_manifest(artifact_manifest))
     sys.stdout.write("\n")
@@ -154,10 +229,11 @@ def cmd_produce(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     """Resolve the target repo and print its published artifact versions, one per line."""
     settings = Settings()
-    target_repo = args.repo if args.repo is not None else settings.model_repo_id
-    if target_repo is None:
-        print("list requires --repo (or MODEL_REPO_ID)", file=sys.stderr)
-        return 2
+    target_repo = _setting_or_arg(args.repo, settings.model_repo_id)
+    exit_code = _require({"--repo": target_repo}, "list")
+    if exit_code is not None:
+        return exit_code
+    assert target_repo is not None  # noqa: S101 -- _require checked above
 
     for version in hub.list_versions(target_repo):
         print(version)
@@ -168,26 +244,29 @@ def cmd_consume(args: argparse.Namespace) -> int:
     """Resolve consume config and secrets, run the consumer flow, and optionally smoke-test."""
     settings = Settings()
 
-    repo_id = args.repo if args.repo is not None else settings.model_repo_id
-    version = args.version if args.version is not None else settings.model_version
-    if repo_id is None or version is None:
-        print("consume requires --repo and --version (or their env vars)", file=sys.stderr)
-        return 2
+    repo_id = _setting_or_arg(args.repo, settings.model_repo_id)
+    version = _setting_or_arg(args.version, settings.model_version)
+    exit_code = _require({"--repo": repo_id, "--version": version}, "consume")
+    if exit_code is not None:
+        return exit_code
+    assert repo_id is not None and version is not None  # noqa: S101 -- _require checked above
 
-    if args.check_only or sys.stdin.isatty():
-        try:
-            version = resolve_consume_version(repo_id, version, interactive=sys.stdin.isatty())
-        except ConsumerError as exc:
-            print(f"consume failed: {exc}", file=sys.stderr)
-            return 1
-        if args.check_only:
-            print(version)
-            return 0
+    version, exit_code = _resolve_version(
+        resolve_consume_version,
+        repo_id,
+        version,
+        check_only=args.check_only,
+        command="consume",
+        error_type=ConsumerError,
+    )
+    if exit_code is not None:
+        return exit_code
 
-    workdir = args.workdir if args.workdir is not None else settings.model_workdir
-    if workdir is None:
-        print("consume requires --workdir (or MODEL_WORKDIR)", file=sys.stderr)
-        return 2
+    workdir = _setting_or_arg(args.workdir, settings.model_workdir)
+    exit_code = _require({"--workdir": workdir}, "consume")
+    if exit_code is not None:
+        return exit_code
+    assert workdir is not None  # noqa: S101 -- _require checked above
 
     try:
         master_key = _resolve_master_key(settings, key_file_override=args.key_file)
@@ -200,8 +279,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
             repo_id=repo_id, version=version, master_key=master_key, workdir=workdir
         )
     except (ConsumerError, ManifestError, PackagingError) as exc:
-        print(f"consume failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail("consume", exc)
 
     print(f"model verified and decrypted from {repo_id} version {version} into {workdir}")
 
@@ -209,8 +287,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
         try:
             prediction = load_and_predict(workdir, artifact_manifest["model"]["task_hint"])
         except ConsumerError as exc:
-            print(f"smoke test failed: {exc}", file=sys.stderr)
-            return 1
+            return _fail("smoke test", exc)
         print(f"smoke test prediction: {prediction}")
 
     return 0
