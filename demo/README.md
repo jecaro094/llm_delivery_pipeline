@@ -38,3 +38,5 @@ ENCRYPTION_KEY_FILE=demo/encryption-key \
 No `HF_TOKEN` needed: the repo is public, and this command only downloads and decrypts. This runs
 the full consumer path — download, decryption, model loading, and a smoke test — against a real
 published artifact, in one command.
+
+Remove `--workdir` once you're done inspecting the decrypted model (`rm -rf /tmp/model`).

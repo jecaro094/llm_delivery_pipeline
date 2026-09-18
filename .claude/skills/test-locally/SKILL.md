@@ -190,6 +190,19 @@ Report the outcome of each of the five checks to the user, not just whether the 
 exited cleanly — a green `demo.sh` run with a check 5 that doesn't fail loudly would mean the
 encryption isn't actually protecting anything.
 
+## Cleaning up afterwards
+
+After any option that created cluster objects or a local decrypted-model directory, clean them up
+and report what was removed:
+
+- **Option 2 / the fast path**: remove the `--workdir` directory the consumer wrote to (e.g. `rm -rf
+  /tmp/model`).
+- **Option 3**: run `./scripts/demo.sh --cleanup` up front to have the script clean up automatically
+  once it prints its final logs, or `./scripts/cleanup.sh` afterwards — both remove the producer Job,
+  the consumer Pod, and both Secrets from the `confidential-models` namespace, and are safe to run
+  even if nothing exists. `./scripts/cleanup.sh --all` also deletes the namespace itself. An
+  interrupted `demo.sh` run (Ctrl-C) already cleans up on its own, regardless of `--cleanup`.
+
 ## Reporting results
 
 Summarize what ran, what passed, and — if something failed — the exact error rather than a

@@ -161,6 +161,9 @@ not published for `consume`) prompts for a replacement instead of failing outrig
 `--check-only` to only resolve/validate `--version` and print it, without publishing or downloading
 anything.
 
+`--workdir` is where the consumer writes the decrypted model; remove it once you're done inspecting
+the result (`rm -rf /tmp/model`), the local equivalent of the cleanup Option 3 does automatically.
+
 ### Option 3 — Full end-to-end demo on Kubernetes
 
 The full, reproducible path from a clean checkout to a loaded model on minikube: producer Job, Secret,
@@ -227,6 +230,21 @@ cluster, without waiting on the other — useful when debugging one side in isol
 `model-encryption-key` Secret — that key must stay the one the targeted artifact was actually
 encrypted with, so it has to already exist in the cluster (from a prior full run or
 `--producer-only` run) before `--consumer-only` can decrypt anything with it.
+
+By default the producer Job, the consumer Pod, and both Secrets are left in the
+`confidential-models` namespace after a run, so `kubectl logs`/`get` still work against them
+afterwards. End a local run with either:
+
+```bash
+./scripts/demo.sh --cleanup          # remove them once the run's final logs have been printed
+# or, any time later:
+./scripts/cleanup.sh                 # same cleanup, run standalone; --all also deletes the namespace
+```
+
+Interrupting `scripts/demo.sh` (Ctrl-C, or any signal) always cleans up on the way out regardless
+of `--cleanup`, since a run that never finished leaves nothing worth inspecting; a completed run —
+success or an already-diagnosed failure whose logs were printed — never cleans up on its own unless
+`--cleanup` was passed.
 
 ## Verifying the Kubernetes demo (Option 3)
 

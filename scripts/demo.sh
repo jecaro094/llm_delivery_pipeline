@@ -24,19 +24,28 @@
 # MODEL_REPO_ID) to skip that prompt for a version/repo you already know is
 # free. Neither k8s manifest is modified on disk: the resolved version/repo
 # is applied in-memory via `kubectl set env --local` before `kubectl apply`.
+#
+# By default the Job/Pod/Secrets are left in the cluster after a run so
+# `kubectl logs`/`get` still work afterwards -- pass --cleanup to remove them
+# once the run's final logs have been printed, or run scripts/cleanup.sh by
+# hand later. An interrupted run (Ctrl-C, SIGTERM) always cleans up on the
+# way out, regardless of --cleanup, since there is nothing worth inspecting
+# from a run that never finished.
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--version VERSION] [--repo REPO] [--producer-only|--consumer-only]" >&2
+    echo "Usage: $0 [--version VERSION] [--repo REPO] [--producer-only|--consumer-only] [--cleanup]" >&2
     echo "  --version VERSION  publish/consume this artifact version (default: MODEL_VERSION env, else the value baked into the k8s manifests)" >&2
     echo "  --repo REPO        target this Hugging Face repo (default: MODEL_REPO_ID env, else the value baked into the k8s manifests)" >&2
     echo "  --producer-only    publish the artifact and stop; skip the consumer Pod" >&2
     echo "  --consumer-only    decrypt an already-published artifact; skip HF_TOKEN, hf-credentials, and regenerating the encryption key" >&2
+    echo "  --cleanup          remove the Job/Pod/Secrets once the run's final logs have been printed" >&2
 }
 
 VERSION_OVERRIDE="${MODEL_VERSION:-}"
 REPO_OVERRIDE="${MODEL_REPO_ID:-}"
 MODE="both"
+CLEANUP_ON_SUCCESS=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -56,6 +65,10 @@ while [ $# -gt 0 ]; do
             MODE="consumer"
             shift
             ;;
+        --cleanup)
+            CLEANUP_ON_SUCCESS=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -72,6 +85,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMESPACE="${NAMESPACE:-confidential-models}"
 PRODUCER_TAG="model-pipeline-producer:local" # must match scripts/build-images.sh
 CONSUMER_TAG="model-pipeline-consumer:local" # must match scripts/build-images.sh
+
+# Tracks whether this run reached a defined end state (success, or an
+# expected failure that already printed diagnostic logs) so the EXIT trap
+# below can tell a genuine interruption -- Ctrl-C, SIGTERM, an unexpected
+# crash -- apart from a run that finished on its own and intentionally left
+# its objects in place for inspection.
+RUN_FINISHED=false
+
+on_exit() {
+    if [ "${RUN_FINISHED}" = true ]; then
+        return
+    fi
+    echo "== Interrupted: cleaning up =="
+    "${REPO_ROOT}/scripts/cleanup.sh" || true
+}
+trap on_exit EXIT INT TERM
 
 # Fails fast with a specific, actionable message when a required tool is
 # missing or unreachable, instead of letting the script die deep inside a
@@ -94,6 +123,7 @@ check_prerequisites() {
         echo "See the README's 'Testing this locally' section for options that don't" >&2
         echo "need Kubernetes (Option 1: pytest only; Option 2: the CLI directly" >&2
         echo "against Hugging Face Hub)." >&2
+        RUN_FINISHED=true
         exit 1
     fi
 }
@@ -102,6 +132,7 @@ check_prerequisites
 
 if [ "${MODE}" != "consumer" ] && [ -z "${HF_TOKEN:-}" ]; then
     echo "HF_TOKEN must be set (a Hugging Face token with write access to the target repo)." >&2
+    RUN_FINISHED=true
     exit 1
 fi
 
@@ -175,6 +206,7 @@ if [ "${MODE}" = "consumer" ]; then
     if ! TARGET_VERSION="$(docker run --rm "${CONSUMER_TAG}" consume --check-only \
             --repo "${TARGET_REPO}" --version "${TARGET_VERSION}" 2>&1)"; then
         echo "${TARGET_VERSION}" >&2
+        RUN_FINISHED=true
         exit 1
     fi
 else
@@ -214,6 +246,7 @@ if [ "${MODE}" != "consumer" ]; then
     if ! kubectl -n "${NAMESPACE}" wait --for=condition=complete --timeout=300s job/model-producer; then
         echo "producer job did not complete; last logs:" >&2
         kubectl -n "${NAMESPACE}" logs job/model-producer >&2 || true
+        RUN_FINISHED=true
         exit 1
     fi
     kubectl -n "${NAMESPACE}" logs job/model-producer
@@ -221,6 +254,10 @@ fi
 
 if [ "${MODE}" = "producer" ]; then
     echo "== Demo complete: model published (--producer-only, consumer skipped). =="
+    RUN_FINISHED=true
+    if [ "${CLEANUP_ON_SUCCESS}" = true ]; then
+        "${REPO_ROOT}/scripts/cleanup.sh"
+    fi
     exit 0
 fi
 
@@ -248,8 +285,13 @@ done
 if [ "${CONSUMER_PHASE}" != "Succeeded" ]; then
     echo "consumer pod did not complete (phase=${CONSUMER_PHASE:-unknown}); last logs:" >&2
     kubectl -n "${NAMESPACE}" logs pod/model-consumer >&2 || true
+    RUN_FINISHED=true
     exit 1
 fi
 kubectl -n "${NAMESPACE}" logs pod/model-consumer
 
 echo "== Demo complete: model published, decrypted, and loaded. =="
+RUN_FINISHED=true
+if [ "${CLEANUP_ON_SUCCESS}" = true ]; then
+    "${REPO_ROOT}/scripts/cleanup.sh"
+fi
