@@ -134,6 +134,32 @@ def test_resolve_signing_private_key_tolerates_trailing_whitespace(tmp_path: Pat
     )
 
 
+def test_resolve_signing_private_key_translates_a_missing_file_to_key_load_error(
+    tmp_path: Path,
+) -> None:
+    """A non-existent key file must raise KeyLoadError naming the path, not a raw OSError."""
+    missing_file = tmp_path / "does-not-exist.pem"
+    with pytest.raises(keys.KeyLoadError, match="could not read key file") as exc_info:
+        keys.resolve_signing_private_key(key_file=missing_file, key_value=None)
+    assert str(missing_file) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_resolve_signing_private_key_translates_an_unreadable_file_to_key_load_error(
+    tmp_path: Path,
+) -> None:
+    """A key file that exists but cannot be read must raise KeyLoadError, not PermissionError."""
+    key_file = tmp_path / "signing-key.pem"
+    key_file.write_bytes(test_const.TEST_SIGNING_PRIVATE_KEY_PEM)
+    key_file.chmod(0o000)
+    try:
+        with pytest.raises(keys.KeyLoadError, match="could not read key file") as exc_info:
+            keys.resolve_signing_private_key(key_file=key_file, key_value=None)
+        assert isinstance(exc_info.value.__cause__, OSError)
+    finally:
+        key_file.chmod(0o644)
+
+
 def test_resolve_signing_private_key_raises_when_nothing_provided() -> None:
     """Resolving with neither a file nor a value must fail explicitly."""
     with pytest.raises(keys.KeyLoadError):
@@ -205,6 +231,32 @@ def test_resolve_signing_public_key_tolerates_trailing_whitespace(tmp_path: Path
         resolved.public_bytes_raw()
         == signing.load_public_key(test_const.TEST_SIGNING_PUBLIC_KEY_PEM).public_bytes_raw()
     )
+
+
+def test_resolve_signing_public_key_translates_a_missing_file_to_key_load_error(
+    tmp_path: Path,
+) -> None:
+    """A non-existent key file must raise KeyLoadError naming the path, not a raw OSError."""
+    missing_file = tmp_path / "does-not-exist.pem"
+    with pytest.raises(keys.KeyLoadError, match="could not read key file") as exc_info:
+        keys.resolve_signing_public_key(key_file=missing_file, key_value=None)
+    assert str(missing_file) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_resolve_signing_public_key_translates_an_unreadable_file_to_key_load_error(
+    tmp_path: Path,
+) -> None:
+    """A key file that exists but cannot be read must raise KeyLoadError, not PermissionError."""
+    key_file = tmp_path / "signing-public-key.pem"
+    key_file.write_bytes(test_const.TEST_SIGNING_PUBLIC_KEY_PEM)
+    key_file.chmod(0o000)
+    try:
+        with pytest.raises(keys.KeyLoadError, match="could not read key file") as exc_info:
+            keys.resolve_signing_public_key(key_file=key_file, key_value=None)
+        assert isinstance(exc_info.value.__cause__, OSError)
+    finally:
+        key_file.chmod(0o644)
 
 
 def test_resolve_signing_public_key_raises_when_nothing_provided() -> None:

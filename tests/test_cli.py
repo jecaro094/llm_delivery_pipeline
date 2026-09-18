@@ -711,6 +711,35 @@ def test_verify_requires_signing_public_key(
     assert "signing public key" in capsys.readouterr().err
 
 
+def test_verify_reports_a_missing_public_key_file_as_a_configuration_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A non-existent --public-key-file must report a clean exit 2, not an unhandled traceback.
+
+    Regression test: a missing signing key file used to escape
+    resolve_signing_public_key as a raw OSError, past cmd_verify's `except
+    KeyLoadError`, and be reported as an unexpected internal error (exit 3)
+    by main()'s last-resort handler instead.
+    """
+    monkeypatch.delenv("SIGNING_PUBLIC_KEY", raising=False)
+    missing_file = tmp_path / "does-not-exist.pem"
+
+    exit_code = cli.main(
+        [
+            "verify",
+            "--repo",
+            "me/repo",
+            "--version",
+            "1.0.0",
+            "--public-key-file",
+            str(missing_file),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "could not load the signing public key" in capsys.readouterr().err
+
+
 def test_verify_succeeds_and_prints_the_key_fingerprint(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

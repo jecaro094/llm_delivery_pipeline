@@ -118,10 +118,15 @@ def _resolve_pem_text(*, key_file: Path | None, key_value: str | None, missing_m
     """Resolve raw PEM text from a mounted key file, falling back to a raw value.
 
     Shares the same precedence as :func:`resolve_key`: a key file takes
-    precedence over a raw value when both are given.
+    precedence over a raw value when both are given. Raises KeyLoadError,
+    instead of a raw OSError, when key_file cannot be read -- the same
+    fsGroup-related failure mode :func:`load_key_from_file` guards against.
     """
     if key_file is not None:
-        return key_file.read_text(encoding="utf-8")
+        try:
+            return key_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise KeyLoadError(f"could not read key file {key_file}: {exc}") from exc
     if key_value is not None:
         return key_value
     raise KeyLoadError(missing_message)
