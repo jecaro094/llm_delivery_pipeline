@@ -1,5 +1,6 @@
 # Demo key material — for this pinned demo artifact only
 
+**This directory intentionally does what the rest of this repository explicitly avoids: it commits
 key material to git.** Every other key in this project (the real encryption key, the real signing
 key) is generated at runtime and never written to a file tracked by git. The one exception is here,
 and only here, for one reason: to let someone evaluating this repository decrypt and verify a real,
@@ -29,12 +30,16 @@ confused with one of the numbered, real versions used elsewhere.
 ```bash
 source .venv/bin/activate   # after `pip install -e ".[consumer,dev]"`, see the main README
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=demo/encryption-key SIGNING_PUBLIC_KEY_FILE=demo/signing-public-key.pem \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
     --version demo-signed \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
+
+rm -rf "${WORKDIR}"
 ```
 
 No `HF_TOKEN` needed: the repo is public, and this command only downloads and decrypts. This runs

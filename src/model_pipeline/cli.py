@@ -5,10 +5,10 @@ explicit CLI arguments win over environment variables, which win over
 defaults. Environment variables (and an optional local ``.env`` file, see
 ``.env.example`` at the repository root) are resolved by
 :class:`model_pipeline.settings.Settings`; an explicit CLI argument then
-overrides the corresponding field. Secrets (the Hugging Face token and the
-encryption key) are deliberately only ever accepted through environment
-variables or a mounted key file, never as a CLI argument, so they cannot
-leak into shell history or a process listing.
+overrides the corresponding field. Secrets (the Hugging Face token, the
+encryption key, and the signing private key) are deliberately only ever
+accepted through environment variables or a mounted key file, never as a
+CLI argument, so they cannot leak into shell history or a process listing.
 
 ``produce`` and ``consume`` both resolve the requested version against the
 target repo before doing anything else. On a real terminal, a version
@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import logging
 import secrets
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -42,61 +44,225 @@ from model_pipeline.consumer import (
 )
 from model_pipeline.keys import (
     KeyLoadError,
+    resolve_hf_token,
     resolve_key,
     resolve_signing_private_key,
     resolve_signing_public_key,
 )
+from model_pipeline.logging_config import configure_logging
 from model_pipeline.manifest import ManifestError, serialize_manifest
 from model_pipeline.packaging import PackagingError
 from model_pipeline.producer import ProducerError, produce, resolve_produce_version
 from model_pipeline.settings import Settings
 
+logger = logging.getLogger(__name__)
+
+
+def _add_repo_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --repo argument to parser."""
+    parser.add_argument(
+        "--repo",
+        help="Hugging Face Hub repo holding the published artifact (default: MODEL_REPO_ID)",
+    )
+
+
+def _add_version_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --version argument to parser."""
+    parser.add_argument(
+        "--version",
+        help="artifact version, e.g. 1.0.0 (default: MODEL_VERSION)",
+    )
+
+
+def _add_check_only_argument(parser: argparse.ArgumentParser, *, repo_flag: str, verb: str) -> None:
+    """Add the shared --check-only flag to parser, phrased for repo_flag and verb."""
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help=f"only resolve/validate --version against {repo_flag} and print it; {verb} nothing",
+    )
+
+
+def _add_public_key_file_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --public-key-file argument to parser."""
+    parser.add_argument(
+        "--public-key-file",
+        type=Path,
+        help="path to a PEM file holding the Ed25519 public verification key "
+        "(default: SIGNING_PUBLIC_KEY_FILE)",
+    )
+
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser with its keygen/produce/list/consume subcommands."""
-    parser = argparse.ArgumentParser(prog="model_pipeline")
+    """Build the top-level argument parser with its subcommands (keygen, produce, list, ...)."""
+    parser = argparse.ArgumentParser(
+        prog="model_pipeline",
+        epilog="See .env.example at the repository root for the full reference of the "
+        "environment variables named above. Exit codes: 0 success, 1 an expected failure "
+        "(a conflict, the wrong key, an integrity mismatch), 2 a bad invocation or missing "
+        "configuration, 3 an unexpected internal error.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=const.LOG_LEVEL_CHOICES,
+        default=None,
+        help="verbosity of diagnostics written to stderr (default: LOG_LEVEL, "
+        f"currently {const.DEFAULT_LOG_LEVEL!r})",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("keygen", help="generate a new base64-encoded AES-256 master key")
-    subparsers.add_parser("signing-keygen", help="generate a new Ed25519 signing key pair (PEM)")
-
-    produce_parser = subparsers.add_parser("produce", help="encrypt, sign, and publish a model")
-    produce_parser.add_argument("--source-model")
-    produce_parser.add_argument("--target-repo")
-    produce_parser.add_argument("--version")
-    produce_parser.add_argument("--chunk-size", type=int)
-    produce_parser.add_argument(
-        "--check-only",
-        action="store_true",
-        help="only resolve/validate --version against --target-repo and print it; publish nothing",
+    subparsers.add_parser(
+        "keygen",
+        help="generate a new base64-encoded AES-256 master key",
+        description="Generate a random 32-byte AES-256 master key and print it, "
+        "base64-encoded, to stdout. Pipe the output straight to a file or a Kubernetes "
+        "Secret; it is never written anywhere by this command.",
     )
 
-    list_parser = subparsers.add_parser("list", help="list published artifact versions")
-    list_parser.add_argument("--repo")
+    subparsers.add_parser(
+        "signing-keygen",
+        help="generate a new Ed25519 signing key pair (PEM)",
+        description="Generate a new Ed25519 signing key pair and print both PEMs to stdout, "
+        "clearly delimited by a comment line. Pipe the output to a file, splitting the private "
+        "and public halves; the private key is never written anywhere by this command.",
+    )
+
+    produce_parser = subparsers.add_parser(
+        "produce",
+        help="encrypt, sign, and publish a model",
+        description="Download --source-model from Hugging Face Hub, encrypt it, sign the "
+        "manifest, and publish the encrypted artifact plus its manifest and detached "
+        "signature to --target-repo. Secrets (HF_TOKEN, the encryption key, the signing "
+        "private key) are never accepted as CLI arguments, only through environment "
+        "variables or a mounted key file, so they cannot leak into shell history or a "
+        "process listing.",
+    )
+    produce_parser.add_argument(
+        "--source-model",
+        help=f"open Hugging Face model to encrypt (default: SOURCE_MODEL, "
+        f"currently {const.DEFAULT_SOURCE_MODEL!r})",
+    )
+    produce_parser.add_argument(
+        "--target-repo",
+        help="Hugging Face Hub repo to publish the encrypted artifact to (default: MODEL_REPO_ID)",
+    )
+    _add_version_argument(produce_parser)
+    produce_parser.add_argument(
+        "--chunk-size",
+        type=int,
+        help=f"AES-GCM chunk size in bytes (default: {const.DEFAULT_CHUNK_SIZE})",
+    )
+    _add_check_only_argument(produce_parser, repo_flag="--target-repo", verb="publish")
+
+    list_parser = subparsers.add_parser(
+        "list",
+        help="list published artifact versions",
+        description="Print every artifact version already published under --repo, one per line.",
+    )
+    _add_repo_argument(list_parser)
 
     verify_parser = subparsers.add_parser(
-        "verify", help="verify a published version's signature, without decrypting anything"
+        "verify",
+        help="verify a published version's signature, without decrypting anything",
+        description="Verify that the manifest published for --version under --repo carries a "
+        "valid Ed25519 signature from the expected producer. Needs neither the decryption key "
+        "nor a Hugging Face token: anyone can run this check against a public repo.",
     )
-    verify_parser.add_argument("--repo")
-    verify_parser.add_argument("--version")
-    verify_parser.add_argument("--public-key-file", type=Path)
+    _add_repo_argument(verify_parser)
+    _add_version_argument(verify_parser)
+    _add_public_key_file_argument(verify_parser)
 
     consume_parser = subparsers.add_parser(
-        "consume", help="verify, download, decrypt, and unpack a model"
+        "consume",
+        help="verify, download, decrypt, and unpack a model",
+        description="Verify the manifest's signature, then download, decrypt, and unpack the "
+        "artifact published under --repo into --workdir. Secrets (the encryption key) are "
+        "never accepted as a CLI argument, only through ENCRYPTION_KEY(_FILE) or --key-file "
+        "pointing at a mounted Kubernetes Secret.",
     )
-    consume_parser.add_argument("--repo")
-    consume_parser.add_argument("--version")
-    consume_parser.add_argument("--key-file", type=Path)
-    consume_parser.add_argument("--public-key-file", type=Path)
-    consume_parser.add_argument("--workdir", type=Path)
-    consume_parser.add_argument("--smoke-test", action="store_true")
+    _add_repo_argument(consume_parser)
+    _add_version_argument(consume_parser)
+    _add_public_key_file_argument(consume_parser)
     consume_parser.add_argument(
-        "--check-only",
-        action="store_true",
-        help="only resolve/validate --version against --repo and print it; download nothing",
+        "--key-file",
+        type=Path,
+        help="path to a file holding the base64-encoded master key (default: ENCRYPTION_KEY_FILE)",
     )
+    consume_parser.add_argument(
+        "--workdir",
+        type=Path,
+        help="directory to decrypt the model into (default: MODEL_WORKDIR)",
+    )
+    consume_parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="after decrypting, load the model and run a single fill-mask inference",
+    )
+    _add_check_only_argument(consume_parser, repo_flag="--repo", verb="download")
 
     return parser
+
+
+def _setting_or_arg[T](arg_value: T | None, settings_value: T) -> T:
+    """Return arg_value when the CLI argument was given; otherwise settings_value.
+
+    Implements the precedence used throughout the pipeline: an explicit
+    --flag always overrides the corresponding environment variable or
+    default captured in settings.
+    """
+    return arg_value if arg_value is not None else settings_value
+
+
+def _require(values: dict[str, object | None], command: str) -> int | None:
+    """Report every value in values that is still None, at once, and return exit code 2.
+
+    Returns None once nothing is missing, so callers can resolve several
+    required values up front and report all the gaps in a single message
+    instead of making the operator fix them one run at a time.
+    """
+    missing = [flag for flag, value in values.items() if value is None]
+    if not missing:
+        return None
+    logger.error("%s requires %s (or their env vars)", command, " and ".join(missing))
+    return 2
+
+
+def _resolve_version(
+    resolver: Callable[..., str],
+    repo: str,
+    version: str,
+    *,
+    check_only: bool,
+    command: str,
+    error_type: type[Exception],
+) -> tuple[str, int | None]:
+    """Resolve version against repo via resolver, honoring --check-only and interactive terminals.
+
+    Skipped entirely when neither check_only nor an interactive terminal
+    applies, so an unattended run (a Kubernetes Job/Pod, CI) leaves version
+    resolution to the producer/consumer flow itself rather than blocking on
+    input that will never arrive. Returns (version, exit_code): exit_code is
+    None when the caller should proceed with the returned version, and an
+    exit code the caller must return immediately otherwise (0 once
+    --check-only has printed the resolved version, 1 on a resolution
+    failure from error_type).
+    """
+    if not check_only and not sys.stdin.isatty():
+        return version, None
+    try:
+        resolved = resolver(repo, version, interactive=sys.stdin.isatty())
+    except error_type as exc:
+        return version, _fail(command, exc)
+    if check_only:
+        print(resolved)
+        return resolved, 0
+    return resolved, None
+
+
+def _fail(command: str, exc: Exception) -> int:
+    """Log '<command> failed: <exc>' and return the exit code for that failure."""
+    logger.error("%s failed: %s", command, exc)
+    return 1
 
 
 def _resolve_master_key(settings: Settings, *, key_file_override: Path | None = None) -> bytes:
@@ -146,31 +312,39 @@ def cmd_produce(args: argparse.Namespace) -> int:
     """Resolve produce configuration and secrets, then run the producer flow."""
     settings = Settings()
 
-    source_model = args.source_model if args.source_model is not None else settings.source_model
-    target_repo = args.target_repo if args.target_repo is not None else settings.model_repo_id
-    version = args.version if args.version is not None else settings.model_version
-    if target_repo is None or version is None:
-        print("produce requires --target-repo and --version (or their env vars)", file=sys.stderr)
-        return 2
+    source_model = _setting_or_arg(args.source_model, settings.source_model)
+    target_repo = _setting_or_arg(args.target_repo, settings.model_repo_id)
+    version = _setting_or_arg(args.version, settings.model_version)
+    exit_code = _require({"--target-repo": target_repo, "--version": version}, "produce")
+    if exit_code is not None:
+        return exit_code
+    assert target_repo is not None and version is not None  # noqa: S101 -- _require checked above
 
-    if args.check_only or sys.stdin.isatty():
-        try:
-            version = resolve_produce_version(target_repo, version, interactive=sys.stdin.isatty())
-        except ProducerError as exc:
-            print(f"produce failed: {exc}", file=sys.stderr)
-            return 1
-        if args.check_only:
-            print(version)
-            return 0
+    version, exit_code = _resolve_version(
+        resolve_produce_version,
+        target_repo,
+        version,
+        check_only=args.check_only,
+        command="produce",
+        error_type=ProducerError,
+    )
+    if exit_code is not None:
+        return exit_code
 
-    if not settings.hf_token:
-        print("HF_TOKEN must be set to publish to Hugging Face Hub", file=sys.stderr)
+    try:
+        hf_token = resolve_hf_token(
+            token_file=settings.hf_token_file,
+            token_value=settings.hf_token,
+            fallback_token=hub.get_cached_token(),
+        )
+    except KeyLoadError as exc:
+        logger.error("could not resolve a Hugging Face token: %s", exc)
         return 2
 
     try:
         master_key = _resolve_master_key(settings)
     except KeyLoadError as exc:
-        print(f"could not load the encryption key: {exc}", file=sys.stderr)
+        logger.error("could not load the encryption key: %s", exc)
         return 2
 
     try:
@@ -178,10 +352,10 @@ def cmd_produce(args: argparse.Namespace) -> int:
             key_file=settings.signing_key_file, key_value=settings.signing_key
         )
     except KeyLoadError as exc:
-        print(f"could not load the signing private key: {exc}", file=sys.stderr)
+        logger.error("could not load the signing private key: %s", exc)
         return 2
 
-    chunk_size = args.chunk_size if args.chunk_size is not None else const.DEFAULT_CHUNK_SIZE
+    chunk_size = _setting_or_arg(args.chunk_size, const.DEFAULT_CHUNK_SIZE)
 
     try:
         artifact_manifest = produce(
@@ -190,12 +364,11 @@ def cmd_produce(args: argparse.Namespace) -> int:
             version=version,
             master_key=master_key,
             signing_private_key=signing_private_key,
-            hf_token=settings.hf_token,
+            hf_token=hf_token,
             chunk_size=chunk_size,
         )
     except ProducerError as exc:
-        print(f"produce failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail("produce", exc)
 
     sys.stdout.buffer.write(serialize_manifest(artifact_manifest))
     sys.stdout.write("\n")
@@ -205,10 +378,11 @@ def cmd_produce(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     """Resolve the target repo and print its published artifact versions, one per line."""
     settings = Settings()
-    target_repo = args.repo if args.repo is not None else settings.model_repo_id
-    if target_repo is None:
-        print("list requires --repo (or MODEL_REPO_ID)", file=sys.stderr)
-        return 2
+    target_repo = _setting_or_arg(args.repo, settings.model_repo_id)
+    exit_code = _require({"--repo": target_repo}, "list")
+    if exit_code is not None:
+        return exit_code
+    assert target_repo is not None  # noqa: S101 -- _require checked above
 
     for version in hub.list_versions(target_repo):
         print(version)
@@ -216,23 +390,24 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Resolve verify config, verify a published version's signature, and print the result.
+    """Resolve verify config, verify a published version's signature, and report the result.
 
     Needs neither the decryption key nor a Hub token: anyone can check that
     a published artifact's manifest was signed by the expected producer.
     """
     settings = Settings()
 
-    repo_id = args.repo if args.repo is not None else settings.model_repo_id
-    version = args.version if args.version is not None else settings.model_version
-    if repo_id is None or version is None:
-        print("verify requires --repo and --version (or their env vars)", file=sys.stderr)
-        return 2
+    repo_id = _setting_or_arg(args.repo, settings.model_repo_id)
+    version = _setting_or_arg(args.version, settings.model_version)
+    exit_code = _require({"--repo": repo_id, "--version": version}, "verify")
+    if exit_code is not None:
+        return exit_code
+    assert repo_id is not None and version is not None  # noqa: S101 -- _require checked above
 
     try:
         public_key = _resolve_signing_public_key(settings, key_file_override=args.public_key_file)
     except KeyLoadError as exc:
-        print(f"could not load the signing public key: {exc}", file=sys.stderr)
+        logger.error("could not load the signing public key: %s", exc)
         return 2
 
     try:
@@ -240,11 +415,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
             repo_id=repo_id, version=version, public_key=public_key
         )
     except (ConsumerError, ManifestError) as exc:
-        print(f"verify failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail("verify", exc)
 
-    fingerprint = artifact_manifest["signature"]["public_key_sha256"]
-    print(f"signature OK for {repo_id} version {version} · key fingerprint {fingerprint}")
+    fingerprint = artifact_manifest.signature.public_key_sha256
+    logger.info(
+        "signature OK for %s version %s · key fingerprint %s", repo_id, version, fingerprint
+    )
     return 0
 
 
@@ -252,37 +428,40 @@ def cmd_consume(args: argparse.Namespace) -> int:
     """Resolve consume config and secrets, run the consumer flow, and optionally smoke-test."""
     settings = Settings()
 
-    repo_id = args.repo if args.repo is not None else settings.model_repo_id
-    version = args.version if args.version is not None else settings.model_version
-    if repo_id is None or version is None:
-        print("consume requires --repo and --version (or their env vars)", file=sys.stderr)
-        return 2
+    repo_id = _setting_or_arg(args.repo, settings.model_repo_id)
+    version = _setting_or_arg(args.version, settings.model_version)
+    exit_code = _require({"--repo": repo_id, "--version": version}, "consume")
+    if exit_code is not None:
+        return exit_code
+    assert repo_id is not None and version is not None  # noqa: S101 -- _require checked above
 
-    if args.check_only or sys.stdin.isatty():
-        try:
-            version = resolve_consume_version(repo_id, version, interactive=sys.stdin.isatty())
-        except ConsumerError as exc:
-            print(f"consume failed: {exc}", file=sys.stderr)
-            return 1
-        if args.check_only:
-            print(version)
-            return 0
+    version, exit_code = _resolve_version(
+        resolve_consume_version,
+        repo_id,
+        version,
+        check_only=args.check_only,
+        command="consume",
+        error_type=ConsumerError,
+    )
+    if exit_code is not None:
+        return exit_code
 
-    workdir = args.workdir if args.workdir is not None else settings.model_workdir
-    if workdir is None:
-        print("consume requires --workdir (or MODEL_WORKDIR)", file=sys.stderr)
-        return 2
+    workdir = _setting_or_arg(args.workdir, settings.model_workdir)
+    exit_code = _require({"--workdir": workdir}, "consume")
+    if exit_code is not None:
+        return exit_code
+    assert workdir is not None  # noqa: S101 -- _require checked above
 
     try:
         master_key = _resolve_master_key(settings, key_file_override=args.key_file)
     except KeyLoadError as exc:
-        print(f"could not load the encryption key: {exc}", file=sys.stderr)
+        logger.error("could not load the encryption key: %s", exc)
         return 2
 
     try:
         public_key = _resolve_signing_public_key(settings, key_file_override=args.public_key_file)
     except KeyLoadError as exc:
-        print(f"could not load the signing public key: {exc}", file=sys.stderr)
+        logger.error("could not load the signing public key: %s", exc)
         return 2
 
     try:
@@ -294,18 +473,18 @@ def cmd_consume(args: argparse.Namespace) -> int:
             workdir=workdir,
         )
     except (ConsumerError, ManifestError, PackagingError) as exc:
-        print(f"consume failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail("consume", exc)
 
-    print(f"model verified and decrypted from {repo_id} version {version} into {workdir}")
+    logger.info(
+        "model verified and decrypted from %s version %s into %s", repo_id, version, workdir
+    )
 
     if args.smoke_test:
         try:
-            prediction = load_and_predict(workdir, artifact_manifest["model"]["task_hint"])
+            prediction = load_and_predict(workdir, artifact_manifest.model.task_hint)
         except ConsumerError as exc:
-            print(f"smoke test failed: {exc}", file=sys.stderr)
-            return 1
-        print(f"smoke test prediction: {prediction}")
+            return _fail("smoke test", exc)
+        logger.info("smoke test prediction: %s", prediction)
 
     return 0
 
@@ -321,7 +500,20 @@ _COMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse argv and dispatch to the selected subcommand, returning its exit code."""
+    """Parse argv, dispatch to the selected subcommand, and return its exit code.
+
+    An exception the subcommand itself did not already turn into a clean
+    error message is logged through the logging channel, instead of
+    printing a raw traceback to a Kubernetes Job/Pod log, and reported as
+    exit code 3. ``KeyboardInterrupt`` and ``SystemExit`` are not
+    ``Exception`` subclasses, so they propagate unchanged.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
-    return _COMMANDS[args.command](args)
+    log_level_name = _setting_or_arg(args.log_level, Settings().log_level)
+    configure_logging(getattr(logging, log_level_name.upper()))
+    try:
+        return _COMMANDS[args.command](args)
+    except Exception:
+        logger.exception("%s failed with an unexpected error", args.command)
+        return 3

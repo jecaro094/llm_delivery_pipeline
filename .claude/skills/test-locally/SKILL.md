@@ -20,11 +20,13 @@ Never guess which option to run. Ask the user which one they want, using this fr
   (including the cryptographic core) is correct, not that the live pipeline works. ~1 min.
 - **Option 2 — CLI without Kubernetes.** Runs the real producer/consumer against the real Hugging
   Face Hub, including signing the manifest and verifying it before decrypting. Needs a Hugging Face
-  **write** token (`HF_TOKEN`). Proves the pipeline logic works end-to-end, but skips the Secret
-  mount and in-memory decryption. ~3-5 min.
+  **write** token, picked up automatically from `hf auth login` -- no need to ask the user for one.
+  Proves the pipeline logic works end-to-end, but skips the Secret mount and in-memory decryption.
+  ~3-5 min.
 - **Option 3 — full Kubernetes demo (`scripts/demo.sh`).** Needs Docker, minikube, `kubectl`, and
-  the same `HF_TOKEN`. The only option that exercises the actual architecture (Job, Secret, Pod,
-  `tmpfs` decryption) described in the README. ~8-10 min.
+  an explicit `HF_TOKEN`: the producer Job runs in its own container, with no access to a host
+  login cache, so `hf auth login` alone is not enough here. The only option that exercises the
+  actual architecture (Job, Secret, Pod, `tmpfs` decryption) described in the README. ~8-10 min.
 
 If the user has no Hugging Face account, no write token, or is short on time (e.g. an interviewer
 evaluating the repository), mention the **pinned demo artifact fast path** as an alternative to
@@ -38,11 +40,23 @@ directly without asking. Otherwise, ask.
 
 ## Asking for required inputs
 
-Never assume, invent, or reuse a stale value for anything an option needs to run (a token, a
-target repo, a version, …). If the value isn't already clear from the current conversation, stop
-and ask the user for it interactively in the terminal before running the command that needs it —
-one value at a time is fine; don't block on gathering all of them upfront. Option 1 needs no
-external input, so this only applies to Options 2 and 3.
+Never assume, invent, or reuse a stale value for anything an option needs to run (a target repo,
+a version, an `HF_TOKEN` for Option 3, …). If the value isn't already clear from the current
+conversation, stop and ask the user for it interactively in the terminal before running the
+command that needs it — one value at a time is fine; don't block on gathering all of them
+upfront. Option 1 needs no external input, so this only applies to Options 2 and 3.
+
+Never ask the user to type or paste a Hugging Face token. Option 2 needs no token input at all —
+`produce` resolves it itself, from `HF_TOKEN`/`HF_TOKEN_FILE` if set, otherwise from `hf auth
+login`'s cached login. If neither is available, the command fails with a clear error naming
+`hf auth login`; relay that error rather than prompting for a token by hand. Option 3 is the one
+exception: its producer Job runs in a container with no access to a host login cache, so it
+genuinely needs `HF_TOKEN` set in the environment before `scripts/demo.sh` runs — check whether
+it's already set before asking. If the user is logged in via `hf auth login`, suggest running
+`export HF_TOKEN=$(hf auth token)` themselves so the value never has to be typed or pasted at
+all; only if they are not logged in does this need a token from
+https://huggingface.co/settings/tokens, and even then it's the user who runs the `export`, never
+something to relay through chat.
 
 ## Running each option
 
@@ -58,11 +72,13 @@ python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[consumer,dev]"
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=demo/encryption-key SIGNING_PUBLIC_KEY_FILE=demo/signing-public-key.pem \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
     --version demo-signed \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -81,23 +97,26 @@ python -m pytest
 
 ### Option 2 — CLI without Kubernetes
 
-Needs three things that are never known in advance — a Hugging Face **write** token
-(`HF_TOKEN`), a target repo (their own namespace, e.g. `<their-namespace>/bert-tiny-encrypted`),
-and a version string (e.g. `1.0.0`). Check whether `HF_TOKEN` is already set in the environment
-before asking for it; ask the user for whichever of the three aren't already resolved, rather than
-assuming a value for any of them.
+Needs two things that are never known in advance — a target repo (their own namespace, e.g.
+`<their-namespace>/bert-tiny-encrypted`) and a version string (e.g. `1.0.0`). Ask the user for
+whichever of the two aren't already resolved, rather than assuming a value for either. The
+Hugging Face token is not one of them: `produce` resolves it itself from `HF_TOKEN`/
+`HF_TOKEN_FILE` if set, otherwise from a cached `hf auth login`. If neither is available, run `hf
+auth login` (once) before retrying, rather than asking the user for a token to type or paste.
 
 ```bash
 python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[producer,consumer,dev]"
 
+hf auth login   # only if produce reports no token available
+
 python -m model_pipeline keygen > .encryption-key
 python -m model_pipeline signing-keygen > .signing-keypair
 sed -n '/BEGIN PRIVATE/,/END PRIVATE/p' .signing-keypair > .signing-key.pem
 sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' .signing-keypair > .signing-public-key.pem
 
-HF_TOKEN=<token> ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
+ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <namespace>/bert-tiny-encrypted \
@@ -108,11 +127,13 @@ python -m model_pipeline verify \
   --version <version> \
   --public-key-file .signing-public-key.pem
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=.encryption-key SIGNING_PUBLIC_KEY_FILE=.signing-public-key.pem \
   python -m model_pipeline consume \
     --repo <namespace>/bert-tiny-encrypted \
     --version <version> \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -205,6 +226,21 @@ kubectl -n confidential-models logs pod/model-consumer
 Report the outcome of each of the eight checks to the user, not just whether the demo script itself
 exited cleanly — a green `demo.sh` run with a check 7 or 8 that doesn't fail loudly would mean
 encryption or signing isn't actually protecting anything.
+
+## Cleaning up afterwards
+
+After any option that created cluster objects or a local decrypted-model directory, clean them up
+and report what was removed:
+
+- **Option 2 / the fast path**: remove the `--workdir` directory the consumer wrote to (`rm -rf
+  "${WORKDIR}"`, the `mktemp -d` directory created above) -- never leave it under a fixed `/tmp`
+  path, see the "Running each option" commands above and `docs/decisions.md` for why.
+- **Option 3**: run `./scripts/demo.sh --cleanup` up front to have the script clean up automatically
+  once it prints its final logs, or `./scripts/cleanup.sh` afterwards — both remove the producer Job,
+  the consumer Pod, the encryption-key and signing-key Secrets, and the signing public-key ConfigMap
+  from the `confidential-models` namespace, and are safe to run even if nothing exists.
+  `./scripts/cleanup.sh --all` also deletes the namespace itself. An interrupted `demo.sh` run
+  (Ctrl-C) already cleans up on its own, regardless of `--cleanup`.
 
 ## Reporting results
 

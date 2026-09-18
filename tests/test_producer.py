@@ -8,6 +8,7 @@ runs end to end without any network access.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -115,8 +116,43 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
         fake_hub.source_dir / "config.json"
     ).read_bytes()
 
-    assert published_manifest["model"]["source_repo"] == SOURCE_MODEL
-    assert published_manifest["model"]["source_revision"] == "deadbeef"
+    assert published_manifest.model.source_repo == SOURCE_MODEL
+    assert published_manifest.model.source_revision == "deadbeef"
+
+
+def test_produce_logs_every_milestone(fake_hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:
+    """produce must log the revision, snapshot, archive/encrypted sizes, and upload completion."""
+    with caplog.at_level(logging.INFO):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("resolved source model revision" in message for message in messages)
+    assert any("downloaded model snapshot" in message for message in messages)
+    assert any("packed model snapshot into archive" in message for message in messages)
+    assert any("encrypted archive" in message for message in messages)
+    assert any("upload complete" in message for message in messages)
+
+
+def test_produce_never_logs_the_token(fake_hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:
+    """No log record emitted by a full produce() run may contain the Hugging Face token."""
+    with caplog.at_level(logging.DEBUG):
+        produce(
+            source_model=SOURCE_MODEL,
+            target_repo=TARGET_REPO,
+            version="1.0.0",
+            master_key=test_const.TEST_MASTER_KEY,
+            signing_private_key=SIGNING_PRIVATE_KEY,
+            hf_token=FAKE_TOKEN,
+            chunk_size=test_const.SMALL_TEST_CHUNK_SIZE,
+        )
+    assert all(FAKE_TOKEN not in record.getMessage() for record in caplog.records)
 
 
 def test_produce_publishes_three_files_and_the_manifest_is_the_exact_signed_bytes(
@@ -152,7 +188,7 @@ def test_produce_publishes_three_files_and_the_manifest_is_the_exact_signed_byte
     signature_bytes = (version_dir / "manifest.json.sig").read_bytes()
     signing_module.verify(manifest_bytes, signature_bytes, SIGNING_PRIVATE_KEY.public_key())
     expected_fingerprint = signing_module.public_key_fingerprint(SIGNING_PRIVATE_KEY.public_key())
-    assert published_manifest["signature"]["public_key_sha256"] == expected_fingerprint
+    assert published_manifest.signature.public_key_sha256 == expected_fingerprint
 
 
 def test_produce_rejects_a_source_model_without_a_model_type(
@@ -291,3 +327,16 @@ def test_resolve_produce_version_reprompts_on_blank_input_without_a_suggestion(
     with patch("builtins.input", side_effect=["", "def"]):
         resolved = resolve_produce_version(TARGET_REPO, "abc", interactive=True)
     assert resolved == "def"
+
+
+def test_resolve_produce_version_raises_when_operator_never_enters_a_free_version(
+    fake_hub: FakeHub,
+) -> None:
+    """resolve_produce_version must raise ProducerError, not hang, after repeated conflicts."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.0").mkdir(parents=True)
+
+    with (
+        patch("builtins.input", return_value="1.0.0"),
+        pytest.raises(ProducerError, match="no valid value entered"),
+    ):
+        resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True)

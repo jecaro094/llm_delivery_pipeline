@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
+import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +34,68 @@ def _set_signing_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set both signing key env vars to the fixed test key pair."""
     monkeypatch.setenv("SIGNING_KEY", SIGNING_PRIVATE_KEY_PEM)
     monkeypatch.setenv("SIGNING_PUBLIC_KEY", SIGNING_PUBLIC_KEY_PEM)
+
+
+def test_every_cli_argument_is_documented_with_help() -> None:
+    """Every declared argument, on every subparser, must carry a non-empty help= string."""
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    for sub_parser in subparsers_action.choices.values():
+        for action in sub_parser._actions:
+            if isinstance(action, argparse._HelpAction):
+                continue
+            assert action.help, (
+                f"{sub_parser.prog!r} argument {action.option_strings} has no help text"
+            )
+
+
+def test_every_subcommand_has_a_description() -> None:
+    """Every subcommand must carry a description= shown by `<command> --help`."""
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    for sub_parser in subparsers_action.choices.values():
+        assert sub_parser.description, f"{sub_parser.prog!r} has no description"
+
+
+def test_setting_or_arg_prefers_the_cli_argument_when_given() -> None:
+    """_setting_or_arg must return the CLI argument when it is not None."""
+    assert cli._setting_or_arg("from-arg", "from-settings") == "from-arg"
+
+
+def test_setting_or_arg_falls_back_to_settings_when_arg_is_none() -> None:
+    """_setting_or_arg must return the settings value when the CLI argument is None."""
+    assert cli._setting_or_arg(None, "from-settings") == "from-settings"
+
+
+def test_require_returns_none_when_nothing_is_missing() -> None:
+    """_require must return None when every value is present."""
+    assert cli._require({"--repo": "me/repo", "--version": "1.0.0"}, "produce") is None
+
+
+def test_require_reports_every_missing_value_together(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_require must name every missing value in one log record and return exit code 2."""
+    with caplog.at_level("ERROR"):
+        exit_code = cli._require({"--target-repo": None, "--version": None}, "produce")
+    assert exit_code == 2
+    message = caplog.records[-1].getMessage()
+    assert "--target-repo" in message
+    assert "--version" in message
+
+
+def test_fail_prints_the_command_and_reason_and_returns_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_fail must log '<command> failed: <exc>' and return exit code 1."""
+    with caplog.at_level("ERROR"):
+        exit_code = cli._fail("produce", ProducerError("boom"))
+    assert exit_code == 1
+    assert "produce failed: boom" in caplog.records[-1].getMessage()
 
 
 def test_keygen_prints_a_valid_base64_32_byte_key(capsys: pytest.CaptureFixture[str]) -> None:
@@ -100,6 +165,42 @@ def test_produce_requires_hf_token(
     exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
     assert exit_code == 2
     assert "HF_TOKEN" in capsys.readouterr().err
+
+
+def test_produce_falls_back_to_a_cached_login_token_when_hf_token_is_unset(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """produce must use huggingface_hub.get_token()'s cached login when HF_TOKEN is unset."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    _set_signing_env(monkeypatch)
+    monkeypatch.setattr("model_pipeline.cli.hub.get_cached_token", lambda: "cached-token")
+    fake_manifest = _fake_manifest()
+    with patch("model_pipeline.cli.produce", return_value=fake_manifest) as mock_produce:
+        exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 0
+    assert mock_produce.call_args.kwargs["hf_token"] == "cached-token"  # noqa: S105
+
+
+def test_produce_reads_the_token_from_hf_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """produce must prefer HF_TOKEN_FILE over HF_TOKEN when both are set."""
+    token_file = tmp_path / "hf-token"
+    token_file.write_text("from-file\n", encoding="utf-8")
+    monkeypatch.setenv("HF_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("HF_TOKEN", "from-env-value")  # noqa: S105
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    _set_signing_env(monkeypatch)
+    fake_manifest = _fake_manifest()
+    with patch("model_pipeline.cli.produce", return_value=fake_manifest) as mock_produce:
+        exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 0
+    assert mock_produce.call_args.kwargs["hf_token"] == "from-file"  # noqa: S105
 
 
 def test_produce_requires_encryption_key(
@@ -429,7 +530,7 @@ def test_consume_runs_the_consumer_flow_without_smoke_test(
         signing.load_public_key(test_const.TEST_SIGNING_PUBLIC_KEY_PEM)
     )
     mock_load_and_predict.assert_not_called()
-    assert "me/repo" in capsys.readouterr().out
+    assert "me/repo" in capsys.readouterr().err
 
 
 def test_consume_runs_the_smoke_test_when_requested(
@@ -464,7 +565,7 @@ def test_consume_runs_the_smoke_test_when_requested(
 
     assert exit_code == 0
     mock_load_and_predict.assert_called_once_with(workdir, "fill-mask")
-    assert "'capital' (0.988)" in capsys.readouterr().out
+    assert "'capital' (0.988)" in capsys.readouterr().err
 
 
 def test_consume_reports_a_smoke_test_failure(
@@ -626,7 +727,7 @@ def test_verify_succeeds_and_prints_the_key_fingerprint(
     mock_verify.assert_called_once()
     assert mock_verify.call_args.kwargs["repo_id"] == "me/repo"
     assert mock_verify.call_args.kwargs["version"] == "1.0.0"
-    assert "signature OK" in capsys.readouterr().out
+    assert "signature OK" in capsys.readouterr().err
 
 
 def test_verify_reports_a_consumer_error_and_exits_1(
@@ -643,3 +744,103 @@ def test_verify_reports_a_consumer_error_and_exits_1(
 
     assert exit_code == 1
     assert "signature verification failed" in capsys.readouterr().err
+
+
+def test_main_reports_an_unexpected_exception_as_exit_code_three(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An exception a subcommand did not translate itself must be logged and exit 3."""
+
+    def _boom(_args: argparse.Namespace) -> int:
+        """Raise an exception no subcommand is expected to translate itself."""
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(cli._COMMANDS, "keygen", _boom)
+    with caplog.at_level("ERROR"):
+        exit_code = cli.main(["keygen"])
+    assert exit_code == 3
+    assert any("unexpected error" in record.getMessage() for record in caplog.records)
+
+
+def test_main_lets_a_keyboard_interrupt_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A KeyboardInterrupt must not be swallowed by the top-level unexpected-error guard."""
+
+    def _interrupt(_args: argparse.Namespace) -> int:
+        """Raise KeyboardInterrupt, which the top-level guard must not catch."""
+        raise KeyboardInterrupt
+
+    monkeypatch.setitem(cli._COMMANDS, "keygen", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["keygen"])
+
+
+def test_log_level_debug_emits_debug_records_and_default_does_not(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """--log-level debug must let DEBUG records through; the default (info) must filter them."""
+
+    def _log_debug(_args: argparse.Namespace) -> int:
+        """Emit a single DEBUG record for the test to check propagation."""
+        logging.getLogger("model_pipeline.cli").debug("debug marker")
+        return 0
+
+    monkeypatch.setitem(cli._COMMANDS, "keygen", _log_debug)
+    caplog.set_level(logging.DEBUG)
+
+    cli.main(["keygen"])
+    assert not any("debug marker" in record.getMessage() for record in caplog.records)
+
+    caplog.clear()
+    cli.main(["--log-level", "debug", "keygen"])
+    assert any("debug marker" in record.getMessage() for record in caplog.records)
+
+
+def test_stdout_contains_only_the_key_for_keygen(capsys: pytest.CaptureFixture[str]) -> None:
+    """keygen's stdout must be exactly one line: the base64 key, nothing else."""
+    exit_code = cli.main(["keygen"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert out.count("\n") == 1
+    assert len(base64.b64decode(out.strip(), validate=True)) == const.KEY_SIZE
+
+
+def test_stdout_contains_only_the_versions_for_list(capsys: pytest.CaptureFixture[str]) -> None:
+    """list's stdout must be exactly the published versions, one per line, nothing else."""
+    with patch("model_pipeline.cli.hub.list_versions", return_value=["1.0.0", "1.1.0"]):
+        exit_code = cli.main(["list", "--repo", "me/repo"])
+    assert exit_code == 0
+    assert capsys.readouterr().out == "1.0.0\n1.1.0\n"
+
+
+def test_stdout_contains_only_the_version_for_produce_check_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """produce --check-only's stdout must be exactly the resolved version, nothing else."""
+    with (
+        patch("model_pipeline.cli.resolve_produce_version", return_value="1.0.0"),
+        patch("model_pipeline.cli.produce") as mock_produce,
+    ):
+        exit_code = cli.main(
+            ["produce", "--target-repo", "me/repo", "--version", "1.0.0", "--check-only"]
+        )
+    assert exit_code == 0
+    mock_produce.assert_not_called()
+    assert capsys.readouterr().out == "1.0.0\n"
+
+
+def test_stdout_contains_only_the_manifest_json_for_produce(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """produce's stdout must be exactly the serialized manifest, nothing else."""
+    monkeypatch.setenv("HF_TOKEN", "hf_token")  # noqa: S105
+    monkeypatch.setenv(
+        "ENCRYPTION_KEY", base64.b64encode(test_const.TEST_MASTER_KEY).decode("ascii")
+    )
+    _set_signing_env(monkeypatch)
+    fake_manifest = _fake_manifest()
+    with patch("model_pipeline.cli.produce", return_value=fake_manifest):
+        exit_code = cli.main(["produce", "--target-repo", "me/repo", "--version", "1.0.0"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.endswith("\n")
+    assert json.loads(out) == fake_manifest.model_dump(mode="json")

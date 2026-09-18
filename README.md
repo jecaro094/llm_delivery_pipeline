@@ -62,11 +62,12 @@ upload happens, with an error naming the missing key.
 ## Testing this locally
 
 There are three independent ways to exercise this repository, covering progressively more of the
-architecture. Each is self-contained; pick the one that matches the dependencies you're willing to
-install.
+architecture, plus a zero-setup fast path against a pinned demo artifact for anyone without a
+Hugging Face account or short on time. Each is self-contained; pick the one that matches the
+dependencies you're willing to install.
 
 If you're driving this repository through Claude Code, the [`test-locally`](.claude/skills/test-locally/SKILL.md)
-skill runs any of the three for you — including the full verification sequence after Option 3 —
+skill runs any of them for you — including the full verification sequence after Option 3 —
 without you having to copy commands by hand: just ask it to run the repo locally, or invoke it
 directly with `/test-locally`.
 
@@ -81,6 +82,34 @@ nothing to publish yourself — see [`demo/README.md`](demo/README.md).
 | [Option 1](#option-1--run-the-test-suite-only) | The code is correct (crypto round-trip, tampering detection, mocked HF/producer/consumer logic) | Python only | 1 min |
 | [Option 2](#option-2--run-the-pipeline-directly-without-kubernetes) | The pipeline works end-to-end against real Hugging Face Hub | Python + HF write token | 3-5 min |
 | [Option 3](#option-3--full-end-to-end-demo-on-kubernetes) | The full architecture works, including the Secret mount and in-memory decryption | Docker + minikube + HF write token | 8-10 min |
+
+### Fast path — pinned demo artifact (no account, no token)
+
+Runs the real consumer against a real, already-published artifact using a demo-only encryption key
+committed to the repository on purpose — see [`demo/README.md`](demo/README.md) for why that
+exception is safe. This proves the same thing Option 2's consume step proves (download, decryption,
+model loading) against a real published artifact, without the producer side or the Secret/Pod
+machinery from Option 3.
+
+**Dependencies needed:** Python 3.12+ only. No Docker, no minikube, no Hugging Face account or
+token, and nothing to publish.
+
+```bash
+python3.12 -m venv .venv   # skip if a .venv already exists
+source .venv/bin/activate
+pip install -e ".[consumer,dev]"
+
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
+ENCRYPTION_KEY_FILE=demo/encryption-key \
+  python -m model_pipeline consume \
+    --repo jecaro/bert-tiny-encrypted \
+    --version demo \
+    --workdir "${WORKDIR}" \
+    --smoke-test
+
+rm -rf "${WORKDIR}"
+```
 
 ### Option 1 — Run the test suite only
 
@@ -110,15 +139,19 @@ logic from the deployment layer.
 
 **Dependencies needed:**
 - Python 3.12+
-- A Hugging Face account with a **write** token (`HF_TOKEN`), to publish to a repo of your own (e.g.
+- A Hugging Face account with a **write** token, to publish to a repo of your own (e.g.
   `<your-namespace>/bert-tiny-encrypted`). The consumer step does not need a token: the target repo is
-  public (see decision 8 in `docs/decisions.md`).
+  public (see decision 8 in `docs/decisions.md`). Run `hf auth login` once beforehand and
+  `produce` picks up the cached token automatically -- no need to type or export it; `HF_TOKEN`
+  (or `HF_TOKEN_FILE`, for a mounted-file token) still works and takes precedence if set.
 - No Docker, no minikube
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -e ".[producer,consumer,dev]"
+
+hf auth login   # once; produce picks up the cached token from here on
 
 python -m model_pipeline keygen > .encryption-key           # base64 AES-256 key, local file only
 python -m model_pipeline signing-keygen > .signing-keypair   # Ed25519 PEM pair, both keys printed
@@ -128,7 +161,7 @@ python -m model_pipeline signing-keygen > .signing-keypair   # Ed25519 PEM pair,
 sed -n '/BEGIN PRIVATE/,/END PRIVATE/p' .signing-keypair > .signing-key.pem
 sed -n '/BEGIN PUBLIC/,/END PUBLIC/p' .signing-keypair > .signing-public-key.pem
 
-HF_TOKEN=<your token> ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
+ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
   python -m model_pipeline produce \
     --source-model google/bert_uncased_L-2_H-128_A-2 \
     --target-repo <your-namespace>/bert-tiny-encrypted \
@@ -140,11 +173,13 @@ python -m model_pipeline verify \
   --version 1.0.0 \
   --public-key-file .signing-public-key.pem
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=.encryption-key SIGNING_PUBLIC_KEY_FILE=.signing-public-key.pem \
   python -m model_pipeline consume \
     --repo <your-namespace>/bert-tiny-encrypted \
     --version 1.0.0 \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -156,6 +191,11 @@ not published for `consume`) prompts for a replacement instead of failing outrig
 `--check-only` to only resolve/validate `--version` and print it, without publishing or downloading
 anything.
 
+`--workdir` is where the consumer writes the decrypted model; it must never be a fixed `/tmp` path
+(see [`docs/decisions.md`](docs/decisions.md#local-runs-outside-kubernetes-do-not-decrypt-into-tmp-either)
+for why). Remove it once you're done inspecting the result (`rm -rf "${WORKDIR}"`), the local
+equivalent of the cleanup Option 3 does automatically.
+
 ### Option 3 — Full end-to-end demo on Kubernetes
 
 The full, reproducible path from a clean checkout to a loaded model on minikube: producer Job, Secret,
@@ -165,8 +205,10 @@ described at the top of this README, not just the underlying Python logic.
 **Dependencies needed:**
 - Docker (to build both images)
 - [minikube](https://minikube.sigs.k8s.io/) and `kubectl`
-- A Hugging Face account with a **write** token (`HF_TOKEN`), same as Option 2. The consumer Pod does
-  not need one.
+- A Hugging Face account with a **write** token, same as Option 2. Unlike Option 2, `hf auth
+  login`'s cached token is not enough here: the producer Job runs inside its own container, with
+  no access to your host's login cache, so it needs the token passed in explicitly as `HF_TOKEN`.
+  The consumer Pod does not need one.
 - Enough local resources to run minikube and build/load two images that bundle `torch`/`transformers`
 
 ```bash
@@ -222,6 +264,21 @@ cluster, without waiting on the other — useful when debugging one side in isol
 `model-encryption-key` Secret — that key must stay the one the targeted artifact was actually
 encrypted with, so it has to already exist in the cluster (from a prior full run or
 `--producer-only` run) before `--consumer-only` can decrypt anything with it.
+
+By default the producer Job, the consumer Pod, the encryption-key and signing-key Secrets, and the
+signing public-key ConfigMap are left in the `confidential-models` namespace after a run, so
+`kubectl logs`/`get` still work against them afterwards. End a local run with either:
+
+```bash
+./scripts/demo.sh --cleanup          # remove them once the run's final logs have been printed
+# or, any time later:
+./scripts/cleanup.sh                 # same cleanup, run standalone; --all also deletes the namespace
+```
+
+Interrupting `scripts/demo.sh` (Ctrl-C, or any signal) always cleans up on the way out regardless
+of `--cleanup`, since a run that never finished leaves nothing worth inspecting; a completed run —
+success or an already-diagnosed failure whose logs were printed — never cleans up on its own unless
+`--cleanup` was passed.
 
 ## Verifying the Kubernetes demo (Option 3)
 

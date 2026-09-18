@@ -74,6 +74,11 @@ DEFAULT_PUBLIC_KEY_ID = "model-signing-public-key"
 # container's own format_version. Bumped to 2.0 because the signature
 # section is a required addition, not an optional one: a consumer must
 # reject an older, unsigned manifest rather than silently skip verification.
+# Kept in sync with the hardcoded Literal["2.0"] type of
+# manifest.Manifest.manifest_version by
+# test_manifest_version_literal_matches_constant -- mypy cannot narrow a
+# plain module constant into a Literal type argument, so the two can't
+# share a single definition.
 MANIFEST_VERSION = "2.0"
 
 # --- Hugging Face Hub layout ---
@@ -100,6 +105,25 @@ DEFAULT_TASK_HINT = "fill-mask"
 # --- Producer metadata ---
 
 TOOL_NAME = "model_pipeline"
+
+# --- Interactive prompts ---
+
+# Number of rejected candidates prompt_for_value tolerates before giving up,
+# so an unattended run against a non-interactive stdin can never hang forever.
+MAX_PROMPT_ATTEMPTS = 5
+
+# --- Logging ---
+
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+DEFAULT_LOG_LEVEL = "info"
+LOG_LEVEL_CHOICES = ("debug", "info", "warning", "error")
+
+# Third-party loggers whose own INFO/DEBUG chatter (HTTP retries, connection
+# pooling, file locking) would otherwise drown out this pipeline's own
+# diagnostics; always held at WARNING regardless of --log-level. httpx is
+# the HTTP client huggingface_hub itself uses and logs one INFO line per
+# request, which is what actually shows up unless it is included here too.
+NOISY_LOGGERS = ("huggingface_hub", "httpx", "urllib3", "filelock")
 
 # --- Source model validation ---
 

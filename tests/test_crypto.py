@@ -45,7 +45,7 @@ def test_wrong_key_fails_authentication_not_garbage() -> None:
     container = crypto.encrypt(
         plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
     )
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(container, test_const.OTHER_MASTER_KEY)
 
 
@@ -60,7 +60,7 @@ def test_ciphertext_bit_flip_is_detected() -> None:
     header_len = _read_header_len(bytes(container))
     tamper_offset = len(const.MAGIC) + 1 + const.HEADER_LEN_SIZE + header_len + const.CHUNK_LEN_SIZE
     container[tamper_offset] ^= 0x01
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(bytes(container), test_const.TEST_MASTER_KEY)
 
 
@@ -77,7 +77,7 @@ def test_truncation_of_last_chunk_is_detected() -> None:
     last_chunk_len = struct.unpack(">I", container[length_prefix_start:length_prefix_end])[0]
     truncated = container[: -(last_chunk_len + const.CHUNK_LEN_SIZE)]
 
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(truncated, test_const.TEST_MASTER_KEY)
 
 
@@ -93,7 +93,7 @@ def test_chunk_reordering_is_detected() -> None:
     assert len(chunks) == 3
 
     reordered = container[:header_end] + b"".join([chunks[1], chunks[0], chunks[2]])
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(reordered, test_const.TEST_MASTER_KEY)
 
 
@@ -116,7 +116,7 @@ def test_header_tampering_is_detected() -> None:
     header[idx] = ord("9") if header[idx : idx + 1] != b"9" else ord("1")
     container[header_start : header_start + header_len] = header
 
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(bytes(container), test_const.TEST_MASTER_KEY)
 
 
@@ -155,27 +155,27 @@ def test_invalid_magic_is_rejected() -> None:
         plaintext, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
     )
     corrupted = b"XXXXXXX\x00" + container[len(const.MAGIC) :]
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="invalid magic bytes"):
         crypto.decrypt(corrupted, test_const.TEST_MASTER_KEY)
 
 
 def test_rejects_wrong_key_size() -> None:
     """Both encrypt and decrypt must reject a master key that is not exactly 32 bytes."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="master key must be"):
         crypto.encrypt(b"data", b"too-short")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="master key must be"):
         crypto.decrypt(b"anything", b"too-short")
 
 
 def test_decrypt_raises_on_empty_container() -> None:
     """Decrypting an empty byte string must raise, not crash with an unrelated exception."""
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="too short to contain a valid header"):
         crypto.decrypt(b"", test_const.TEST_MASTER_KEY)
 
 
 def test_encrypt_rejects_non_positive_chunk_size() -> None:
     """A zero or negative chunk_size must be rejected before any encryption work happens."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="chunk_size must be positive"):
         crypto.encrypt(b"data", test_const.TEST_MASTER_KEY, chunk_size=0)
 
 

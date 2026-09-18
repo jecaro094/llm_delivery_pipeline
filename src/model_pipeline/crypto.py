@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Iterator
 
@@ -25,6 +26,8 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 import model_pipeline.constants as const
+
+logger = logging.getLogger(__name__)
 
 
 class DecryptionError(Exception):
@@ -167,6 +170,12 @@ def encrypt(
 
     chunks = list(_iter_plaintext_chunks(plaintext, chunk_size))
     last_index = len(chunks) - 1
+    logger.debug(
+        "encrypting: chunk_count=%d total_size_bytes=%d chunk_size_bytes=%d",
+        len(chunks),
+        len(plaintext),
+        chunk_size,
+    )
 
     out = bytearray()
     out += const.MAGIC
@@ -195,6 +204,11 @@ def decrypt(container: bytes, master_key: bytes) -> bytes:
     header_bytes, offset = _split_header(container)
     salt = _parse_header_salt(header_bytes)
     chunk_ciphertexts = _split_chunk_ciphertexts(container, offset)
+    logger.debug(
+        "decrypting: chunk_count=%d total_size_bytes=%d",
+        len(chunk_ciphertexts),
+        len(container),
+    )
 
     file_key = _derive_file_key(master_key, salt)
     aesgcm = AESGCM(file_key)

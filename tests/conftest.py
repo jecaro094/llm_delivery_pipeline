@@ -23,6 +23,21 @@ def _isolate_settings_from_local_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.chdir(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _no_cached_hf_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent a developer's local ``hf auth login`` cache from leaking into the test suite.
+
+    Without this, ``model_pipeline.hub.get_cached_token()`` would return
+    whatever ``huggingface_hub`` finds cached on the machine running the
+    tests, making any test that expects "no token available" pass or fail
+    depending on host state instead of the environment each test sets up
+    explicitly. A test that exercises the cached-login fallback itself
+    overrides this by monkeypatching ``model_pipeline.hub.get_token``
+    again, which simply replaces this stub.
+    """
+    monkeypatch.setattr("model_pipeline.hub.get_token", lambda: None)
+
+
 @pytest.fixture
 def fake_model_dir(tmp_path: Path) -> Path:
     """Create a small directory tree standing in for a downloaded model snapshot."""

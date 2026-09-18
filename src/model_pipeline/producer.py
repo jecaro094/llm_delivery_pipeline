@@ -10,7 +10,7 @@ manifest that was published alongside it.
 from __future__ import annotations
 
 import json
-import sys
+import logging
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +30,9 @@ from model_pipeline.manifest import (
     compute_sha256,
     serialize_manifest,
 )
+from model_pipeline.prompt import PromptError, prompt_for_value
+
+logger = logging.getLogger(__name__)
 
 
 class ProducerError(Exception):
@@ -55,19 +58,35 @@ def produce(
     rejected before encryption if its architecture cannot be auto-detected
     (see :func:`_validate_model_type`).
     """
-    hub.ensure_public_repo(target_repo, token=hf_token)
-    existing_versions = hub.list_versions(target_repo)
+    try:
+        hub.ensure_public_repo(target_repo, token=hf_token)
+        existing_versions = hub.list_versions(target_repo)
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
     if version in existing_versions:
         raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
 
     with tempfile.TemporaryDirectory(prefix="model-pipeline-produce-") as raw_workdir:
         workdir = Path(raw_workdir)
-        resolved_revision = hub.resolve_model_revision(source_model)
-        hub.download_model_snapshot(source_model, resolved_revision, workdir)
+        try:
+            resolved_revision = hub.resolve_model_revision(source_model)
+            logger.info(
+                "resolved source model revision: repo=%s revision=%s",
+                source_model,
+                resolved_revision,
+            )
+            hub.download_model_snapshot(source_model, resolved_revision, workdir)
+            logger.info(
+                "downloaded model snapshot: repo=%s revision=%s", source_model, resolved_revision
+            )
+        except hub.HubError as exc:
+            raise ProducerError(str(exc)) from exc
         _validate_model_type(workdir, source_model)
         plaintext_tar = packaging.pack_directory(workdir)
+        logger.info("packed model snapshot into archive: size_bytes=%d", len(plaintext_tar))
 
     encrypted_container = crypto.encrypt(plaintext_tar, master_key, chunk_size=chunk_size)
+    logger.info("encrypted archive: size_bytes=%d", len(encrypted_container))
 
     artifact_manifest = build_manifest(
         created_at=datetime.now(UTC).isoformat(),
@@ -102,14 +121,18 @@ def produce(
     manifest_bytes = serialize_manifest(artifact_manifest)
     signature_bytes = signing.sign(manifest_bytes, signing_private_key)
 
-    hub.upload_artifact(
-        target_repo,
-        version,
-        artifact_bytes=encrypted_container,
-        signature_bytes=signature_bytes,
-        manifest_bytes=manifest_bytes,
-        token=hf_token,
-    )
+    try:
+        hub.upload_artifact(
+            target_repo,
+            version,
+            artifact_bytes=encrypted_container,
+            signature_bytes=signature_bytes,
+            manifest_bytes=manifest_bytes,
+            token=hf_token,
+        )
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
+    logger.info("upload complete: repo=%s version=%s", target_repo, version)
 
     return artifact_manifest
 
@@ -127,28 +150,38 @@ def resolve_produce_version(target_repo: str, version: str, *, interactive: bool
     of blocking on input that will never arrive, exactly like produce()
     itself already does.
     """
-    existing_versions = hub.list_versions(target_repo)
+    try:
+        existing_versions = hub.list_versions(target_repo)
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
     if version not in existing_versions:
         return version
     if not interactive:
         raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
 
-    print(_version_exists_message(version, target_repo, existing_versions), file=sys.stderr)
+    logger.warning(_version_exists_message(version, target_repo, existing_versions))
     suggestion = suggest_next_version(existing_versions)
-    while True:
-        hint = f" [{suggestion}]" if suggestion else ""
-        print(f"Enter a version to publish under {target_repo!r}{hint}: ", end="", file=sys.stderr)
-        sys.stderr.flush()
-        candidate = input().strip() or suggestion
+    hint = f" [{suggestion}]" if suggestion else ""
+
+    def is_valid(candidate: str) -> bool:
+        """Return True when candidate is non-empty and not already published."""
+        return bool(candidate) and candidate not in existing_versions
+
+    def invalid_message(candidate: str) -> str:
+        """Explain why candidate was rejected: blank input, or an already-published version."""
         if not candidate:
-            print("a version is required", file=sys.stderr)
-            continue
-        if candidate not in existing_versions:
-            return candidate
-        print(
-            f"version {candidate!r} already exists in {target_repo!r}; try another",
-            file=sys.stderr,
+            return "a version is required"
+        return f"version {candidate!r} already exists in {target_repo!r}; try another"
+
+    try:
+        return prompt_for_value(
+            prompt=f"Enter a version to publish under {target_repo!r}{hint}: ",
+            default=suggestion,
+            is_valid=is_valid,
+            invalid_message=invalid_message,
         )
+    except PromptError as exc:
+        raise ProducerError(str(exc)) from exc
 
 
 def _version_exists_message(version: str, target_repo: str, existing_versions: list[str]) -> str:

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", protected_namespaces=())
 
     hf_token: str | None = None
+    hf_token_file: Path | None = None
     encryption_key: str | None = None
     encryption_key_file: Path | None = None
     signing_key: str | None = None
@@ -36,3 +37,4 @@ class Settings(BaseSettings):
     model_version: str | None = None
     source_model: str = const.DEFAULT_SOURCE_MODEL
     model_workdir: Path | None = None
+    log_level: str = const.DEFAULT_LOG_LEVEL

@@ -9,6 +9,7 @@ load_and_predict tests so the suite never needs torch installed.
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from pathlib import Path
@@ -150,7 +151,7 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         workdir=workdir,
     )
 
-    assert returned_manifest["artifact"]["version"] == VERSION
+    assert returned_manifest.artifact.version == VERSION
     assert fake_hub_with_valid_artifact.download_calls == [
         ("manifest", REPO_ID, VERSION),
         ("signature", REPO_ID, VERSION),
@@ -160,6 +161,28 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         assert (workdir / relative_path).read_bytes() == (
             fake_model_dir / relative_path
         ).read_bytes()
+
+
+def test_consume_logs_every_milestone(
+    fake_hub_with_valid_artifact: FakeHub, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """consume must log the manifest fetch, key_id check, hash checks, decryption, and unpack."""
+    with caplog.at_level(logging.INFO):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            public_key=SIGNING_PUBLIC_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("manifest and signature fetched" in message for message in messages)
+    assert any("signature verified" in message for message in messages)
+    assert any("key_id checked" in message for message in messages)
+    assert any("artifact sha256 verified" in message for message in messages)
+    assert any("artifact decrypted" in message for message in messages)
+    assert any("plaintext sha256 verified" in message for message in messages)
+    assert any("unpacked model snapshot" in message for message in messages)
 
 
 def test_consume_rejects_an_invalid_signature_without_downloading_the_artifact(
@@ -325,7 +348,7 @@ def test_consume_rejects_a_tampered_artifact(
     )
     monkeypatch.setattr(consumer, "hub", fake)
 
-    with pytest.raises(manifest_module.ManifestError):
+    with pytest.raises(manifest_module.ManifestError, match="artifact sha256 mismatch"):
         consume(
             repo_id=REPO_ID,
             version=VERSION,
@@ -363,7 +386,7 @@ def test_verify_published_version_succeeds_with_no_master_key(
     artifact_manifest = verify_published_version(
         repo_id=REPO_ID, version=VERSION, public_key=SIGNING_PUBLIC_KEY
     )
-    assert artifact_manifest["artifact"]["version"] == VERSION
+    assert artifact_manifest.artifact.version == VERSION
     # No artifact was downloaded: verification never needed the decryption key.
     assert ("artifact", REPO_ID, VERSION) not in fake_hub_with_valid_artifact.download_calls
 
@@ -423,6 +446,17 @@ def test_resolve_consume_version_prompt_blank_accepts_the_latest(
     with patch("builtins.input", return_value=""):
         resolved = resolve_consume_version(REPO_ID, "unpublished", interactive=True)
     assert resolved == "1.1.0"
+
+
+def test_resolve_consume_version_raises_when_operator_never_enters_a_published_version(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """resolve_consume_version must raise ConsumerError, not hang, after repeated mismatches."""
+    with (
+        patch("builtins.input", return_value="9.9.9"),
+        pytest.raises(ConsumerError, match="no valid value entered"),
+    ):
+        resolve_consume_version(REPO_ID, "unpublished", interactive=True)
 
 
 def test_load_and_predict_rejects_an_unsupported_task_hint(tmp_path: Path) -> None:

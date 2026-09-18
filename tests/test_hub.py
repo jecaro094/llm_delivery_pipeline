@@ -6,11 +6,23 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 
 from model_pipeline import hub
 
 FAKE_TOKEN = "hf_super-secret-token"  # noqa: S105
+
+
+def _http_error(message: str) -> HfHubHTTPError:
+    """Build an HfHubHTTPError the same way huggingface_hub raises one, for test fixtures."""
+    return HfHubHTTPError(message, response=MagicMock())
+
+
+def test_get_cached_token_returns_huggingface_hubs_cached_token() -> None:
+    """get_cached_token must return whatever huggingface_hub.get_token() reports."""
+    with patch("model_pipeline.hub.get_token", return_value="cached-token") as mock_get_token:
+        assert hub.get_cached_token() == "cached-token"
+    mock_get_token.assert_called_once_with()
 
 
 def test_resolve_model_revision_returns_commit_sha() -> None:
@@ -28,7 +40,15 @@ def test_resolve_model_revision_rejects_missing_sha() -> None:
     """resolve_model_revision must raise HubError if the Hub reports no commit sha."""
     with patch("model_pipeline.hub.HfApi") as mock_api_cls:
         mock_api_cls.return_value.model_info.return_value = MagicMock(sha=None)
-        with pytest.raises(hub.HubError):
+        with pytest.raises(hub.HubError, match="could not resolve a commit sha"):
+            hub.resolve_model_revision("prajjwal1/bert-tiny")
+
+
+def test_resolve_model_revision_translates_an_http_error() -> None:
+    """resolve_model_revision must translate an HfHubHTTPError into HubError, not leak it."""
+    with patch("model_pipeline.hub.HfApi") as mock_api_cls:
+        mock_api_cls.return_value.model_info.side_effect = _http_error("401 unauthorized")
+        with pytest.raises(hub.HubError, match="prajjwal1/bert-tiny"):
             hub.resolve_model_revision("prajjwal1/bert-tiny")
 
 
@@ -41,6 +61,13 @@ def test_download_model_snapshot_calls_snapshot_download(tmp_path: Path) -> None
     )
 
 
+def test_download_model_snapshot_translates_an_http_error(tmp_path: Path) -> None:
+    """download_model_snapshot must translate an HfHubHTTPError into HubError."""
+    with patch("model_pipeline.hub.snapshot_download", side_effect=_http_error("503 unavailable")):
+        with pytest.raises(hub.HubError, match="prajjwal1/bert-tiny"):
+            hub.download_model_snapshot("prajjwal1/bert-tiny", "deadbeef", tmp_path)
+
+
 def test_ensure_public_repo_creates_with_private_false() -> None:
     """ensure_public_repo must always request a public, idempotent repo creation."""
     with patch("model_pipeline.hub.HfApi") as mock_api_cls:
@@ -48,6 +75,15 @@ def test_ensure_public_repo_creates_with_private_false() -> None:
     mock_api_cls.return_value.create_repo.assert_called_once_with(
         repo_id="me/bert-tiny-encrypted", token=FAKE_TOKEN, private=False, exist_ok=True
     )
+
+
+def test_ensure_public_repo_translates_an_http_error_without_leaking_the_token() -> None:
+    """ensure_public_repo must translate an HfHubHTTPError into HubError, never with the token."""
+    with patch("model_pipeline.hub.HfApi") as mock_api_cls:
+        mock_api_cls.return_value.create_repo.side_effect = _http_error("401 unauthorized")
+        with pytest.raises(hub.HubError) as exc_info:
+            hub.ensure_public_repo("me/bert-tiny-encrypted", token=FAKE_TOKEN)
+    assert FAKE_TOKEN not in str(exc_info.value)
 
 
 def test_list_versions_parses_manifest_paths() -> None:
@@ -80,6 +116,14 @@ def test_list_versions_returns_empty_when_the_repo_does_not_exist() -> None:
         )
         versions = hub.list_versions("me/does-not-exist")
     assert versions == []
+
+
+def test_list_versions_translates_other_http_errors() -> None:
+    """list_versions must translate a non-404 HfHubHTTPError into HubError, not return []."""
+    with patch("model_pipeline.hub.HfApi") as mock_api_cls:
+        mock_api_cls.return_value.list_repo_files.side_effect = _http_error("503 unavailable")
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted"):
+            hub.list_versions("me/bert-tiny-encrypted")
 
 
 def test_upload_artifact_uploads_all_three_files_under_the_version_prefix() -> None:
@@ -120,6 +164,22 @@ def test_upload_artifact_never_logs_the_token(caplog: pytest.LogCaptureFixture) 
     assert all(FAKE_TOKEN not in record.getMessage() for record in caplog.records)
 
 
+def test_upload_artifact_translates_an_http_error_without_leaking_the_token() -> None:
+    """upload_artifact must translate an HfHubHTTPError into HubError, never with the token."""
+    with patch("model_pipeline.hub.HfApi") as mock_api_cls:
+        mock_api_cls.return_value.upload_file.side_effect = _http_error("401 unauthorized")
+        with pytest.raises(hub.HubError) as exc_info:
+            hub.upload_artifact(
+                "me/bert-tiny-encrypted",
+                "1.0.0",
+                artifact_bytes=b"ciphertext",
+                signature_bytes=b"sig-bytes",
+                manifest_bytes=b"{}",
+                token=FAKE_TOKEN,
+            )
+    assert FAKE_TOKEN not in str(exc_info.value)
+
+
 def test_download_signature_reads_the_downloaded_file(tmp_path: Path) -> None:
     """download_signature must return the bytes of the file hf_hub_download reports."""
     local_file = tmp_path / "manifest.json.sig"
@@ -146,6 +206,13 @@ def test_download_signature_raises_hub_error_for_a_missing_repo_or_version() -> 
             hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
 
 
+def test_download_signature_translates_other_http_errors() -> None:
+    """download_signature must translate a non-404 HfHubHTTPError into HubError too."""
+    with patch("model_pipeline.hub.hf_hub_download", side_effect=_http_error("503 unavailable")):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_signature("me/bert-tiny-encrypted", "1.0.0")
+
+
 def test_download_manifest_reads_the_downloaded_file(tmp_path: Path) -> None:
     """download_manifest must return the bytes of the file hf_hub_download reports."""
     local_file = tmp_path / "manifest.json"
@@ -168,7 +235,14 @@ def test_download_manifest_raises_hub_error_for_a_missing_repo_or_version() -> N
             hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
 
     with patch("model_pipeline.hub.hf_hub_download", side_effect=EntryNotFoundError("no entry")):
-        with pytest.raises(hub.HubError):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
+
+
+def test_download_manifest_translates_other_http_errors() -> None:
+    """download_manifest must translate a non-404 HfHubHTTPError into HubError."""
+    with patch("model_pipeline.hub.hf_hub_download", side_effect=_http_error("503 unavailable")):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
             hub.download_manifest("me/bert-tiny-encrypted", "1.0.0")
 
 
@@ -182,6 +256,23 @@ def test_download_artifact_reads_the_downloaded_file(tmp_path: Path) -> None:
         repo_id="me/bert-tiny-encrypted", filename="versions/1.0.0/model.tar.enc"
     )
     assert content == b"ciphertext"
+
+
+def test_download_artifact_raises_hub_error_for_a_missing_repo_or_version() -> None:
+    """download_artifact must translate a not-found Hub error into HubError, like the manifest."""
+    with patch(
+        "model_pipeline.hub.hf_hub_download",
+        side_effect=RepositoryNotFoundError("not found", response=MagicMock()),
+    ):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_artifact("me/bert-tiny-encrypted", "1.0.0")
+
+
+def test_download_artifact_translates_other_http_errors() -> None:
+    """download_artifact must translate a non-404 HfHubHTTPError into HubError."""
+    with patch("model_pipeline.hub.hf_hub_download", side_effect=_http_error("503 unavailable")):
+        with pytest.raises(hub.HubError, match="me/bert-tiny-encrypted.*1.0.0"):
+            hub.download_artifact("me/bert-tiny-encrypted", "1.0.0")
 
 
 def test_download_manifest_and_artifact_never_pass_a_token() -> None:
