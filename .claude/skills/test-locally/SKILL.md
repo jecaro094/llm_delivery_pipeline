@@ -42,17 +42,46 @@ directly without asking. Otherwise, ask.
 
 Never assume, invent, or reuse a stale value for anything an option needs to run (a target repo,
 a version, an `HF_TOKEN` for Option 3, …). If the value isn't already clear from the current
-conversation, stop and ask the user for it interactively in the terminal before running the
-command that needs it — one value at a time is fine; don't block on gathering all of them
-upfront. Option 1 needs no external input, so this only applies to Options 2 and 3.
+conversation, stop and ask the user for it before running the command that needs it — one value
+at a time is fine; don't block on gathering all of them upfront. Option 1 needs no external
+input, so this only applies to Options 2 and 3.
 
-Never ask the user to type or paste a Hugging Face token. Option 2 needs no token input at all —
-`produce` resolves it itself, from `HF_TOKEN`/`HF_TOKEN_FILE` if set, otherwise from `hf auth
-login`'s cached login. If neither is available, the command fails with a clear error naming
-`hf auth login`; relay that error rather than prompting for a token by hand. Option 3 is the one
-exception: its producer Job runs in a container with no access to a host login cache, so it
-genuinely needs `HF_TOKEN` set in the environment before `scripts/demo.sh` runs — check whether
-it's already set before asking.
+A target repo (and any other genuinely open-ended, free-text value) has no fixed set of valid
+answers, so ask for it as a plain chat question, not via the `AskUserQuestion` tool — that tool
+requires at least two distinct, mutually-exclusive options, and inventing filler options for a
+value that is really "type anything" produces a fake choice instead of a real one. Reserve
+`AskUserQuestion` for points in this skill where there are genuinely 2-4 distinct choices (e.g.
+picking among Options 1/2/3/fast path, or the version-conflict choice below).
+
+A version, unlike a target repo, has a sensible default: propose `1.0.0` for a first publish
+rather than leaving it fully open-ended, mirroring how a fresh repo is described elsewhere in
+this skill. Before running `produce` for real, validate the proposed version cheaply and silently
+with `produce --check-only` against the target repo (no publishing happens):
+
+```bash
+ENCRYPTION_KEY_FILE=.encryption-key SIGNING_KEY_FILE=.signing-key.pem \
+  python -m model_pipeline produce --check-only \
+    --target-repo <namespace>/bert-tiny-encrypted --version 1.0.0
+```
+
+If it prints the version back, it's free — proceed with it without asking anything further. If it
+fails because that version already exists, its error names the next available version; present
+that choice with `AskUserQuestion` using two real options ("Use the suggested version `<X>`" /
+"Enter a different version") rather than asking a single-option question or silently picking one
+for the user.
+
+Never ask the user to type or paste a Hugging Face token, for either option. Option 2 needs no
+token input at all — `produce` resolves it itself, from `HF_TOKEN`/`HF_TOKEN_FILE` if set,
+otherwise from a cached `hf auth login`. Never suggest running `hf auth login` yourself: it
+assumes the `hf` CLI is installed, which is not guaranteed, and it would start an interactive
+login flow outside your control. If `produce` reports no token available, treat it exactly like
+Option 3's `HF_TOKEN` below — ask the user to save a Hugging Face **write** token into a local
+file of their own outside the repository (e.g. `~/.hf-token`) using their own editor or `hf auth
+login` if they already have it installed, then retry `produce` reading from that path via
+`HF_TOKEN_FILE=~/.hf-token` in the same command, following the safe-token-handling rules below.
+Option 3 is the one case where this is needed up front rather than only on failure: its producer
+Job runs in a container with no access to a host login cache, so it genuinely needs `HF_TOKEN` set
+in the environment before `scripts/demo.sh` runs — check whether it's already set before asking.
 
 Getting that value into the environment safely takes care, because of two things that are easy to
 get wrong: shell state (env vars) does not persist between separate tool calls — not between two
@@ -112,18 +141,17 @@ python -m pytest
 ### Option 2 — CLI without Kubernetes
 
 Needs two things that are never known in advance — a target repo (their own namespace, e.g.
-`<their-namespace>/bert-tiny-encrypted`) and a version string (e.g. `1.0.0`). Ask the user for
-whichever of the two aren't already resolved, rather than assuming a value for either. The
-Hugging Face token is not one of them: `produce` resolves it itself from `HF_TOKEN`/
-`HF_TOKEN_FILE` if set, otherwise from a cached `hf auth login`. If neither is available, run `hf
-auth login` (once) before retrying, rather than asking the user for a token to type or paste.
+`<their-namespace>/bert-tiny-encrypted`, asked as a plain chat question) and a version (default
+`1.0.0`, validated/resolved with `produce --check-only` as described in "Asking for required
+inputs" above). The Hugging Face token is not one of them: `produce` resolves it itself from
+`HF_TOKEN`/`HF_TOKEN_FILE` if set, otherwise from a cached `hf auth login`. If neither is
+available, follow the safe-token-handling steps above (a local file, never `hf auth login` run by
+you, never a pasted token) before retrying.
 
 ```bash
 python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[producer,consumer,dev]"
-
-hf auth login   # only if produce reports no token available
 
 python -m model_pipeline keygen > .encryption-key
 python -m model_pipeline signing-keygen > .signing-keypair
