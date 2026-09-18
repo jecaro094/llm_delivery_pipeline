@@ -657,4 +657,4 @@ def test_stdout_contains_only_the_manifest_json_for_produce(
     assert exit_code == 0
     out = capsys.readouterr().out
     assert out.endswith("\n")
-    assert json.loads(out) == fake_manifest
+    assert json.loads(out) == fake_manifest.model_dump(mode="json")

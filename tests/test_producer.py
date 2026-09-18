@@ -112,8 +112,8 @@ def test_produce_publishes_a_working_encrypted_artifact(fake_hub: FakeHub) -> No
         fake_hub.source_dir / "config.json"
     ).read_bytes()
 
-    assert published_manifest["model"]["source_repo"] == SOURCE_MODEL
-    assert published_manifest["model"]["source_revision"] == "deadbeef"
+    assert published_manifest.model.source_repo == SOURCE_MODEL
+    assert published_manifest.model.source_revision == "deadbeef"
 
 
 def test_produce_logs_every_milestone(fake_hub: FakeHub, caplog: pytest.LogCaptureFixture) -> None:

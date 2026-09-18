@@ -123,7 +123,7 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         workdir=workdir,
     )
 
-    assert returned_manifest["artifact"]["version"] == VERSION
+    assert returned_manifest.artifact.version == VERSION
     assert fake_hub_with_valid_artifact.download_calls == [
         ("manifest", REPO_ID, VERSION),
         ("artifact", REPO_ID, VERSION),

@@ -362,7 +362,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
 
     if args.smoke_test:
         try:
-            prediction = load_and_predict(workdir, artifact_manifest["model"]["task_hint"])
+            prediction = load_and_predict(workdir, artifact_manifest.model.task_hint)
         except ConsumerError as exc:
             return _fail("smoke test", exc)
         logger.info("smoke test prediction: %s", prediction)

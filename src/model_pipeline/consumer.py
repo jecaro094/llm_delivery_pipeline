@@ -71,7 +71,7 @@ def _fetch_and_check_manifest(repo_id: str, version: str, expected_key_id: str) 
         raise ConsumerError(str(exc)) from exc
     logger.info("manifest fetched: repo=%s version=%s", repo_id, version)
     artifact_manifest = deserialize_manifest(manifest_bytes)
-    actual_key_id = artifact_manifest["encryption"]["key_id"]
+    actual_key_id = artifact_manifest.encryption.key_id
     if actual_key_id != expected_key_id:
         raise ConsumerError(
             f"key_id mismatch: manifest expects {actual_key_id!r}, consumer has {expected_key_id!r}"

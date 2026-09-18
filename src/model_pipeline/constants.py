@@ -53,7 +53,11 @@ KDF_LABEL = "HKDF-SHA256"
 # --- Manifest ---
 
 # Schema version of the published manifest.json, independent of the
-# container's own format_version.
+# container's own format_version. Kept in sync with the hardcoded
+# Literal["1.0"] type of manifest.Manifest.manifest_version by
+# test_manifest_version_literal_matches_constant -- mypy cannot narrow a
+# plain module constant into a Literal type argument, so the two can't
+# share a single definition.
 MANIFEST_VERSION = "1.0"
 
 # --- Hugging Face Hub layout ---
