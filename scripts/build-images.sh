@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the producer and consumer images and, when minikube is running,
 # loads them into its node so k8s manifests can use them with
-# imagePullPolicy: IfNotPresent and no registry (see PLAN.md, decision #2).
+# imagePullPolicy: IfNotPresent and no registry (see docs/decisions.md, decision 2).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

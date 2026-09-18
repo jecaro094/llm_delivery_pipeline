@@ -4,7 +4,7 @@ kind: Kustomization
 # secret.example.yaml is a documentation template, not applied here: the
 # real Secrets are created imperatively by scripts/gen-key.sh and
 # scripts/demo.sh so no key material or token ever lands in a file tracked
-# by git (see PLAN.md, decision #6 and section 8).
+# by git (see docs/decisions.md, decisions 6 and 8).
 resources:
   - namespace.yaml
   - serviceaccount.yaml

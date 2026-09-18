@@ -2,9 +2,9 @@
 
 Ties together ``hub`` (network I/O), ``packaging`` (tar), ``crypto``
 (encryption), and ``manifest`` (integrity metadata) into the single flow the
-enunciado describes for the producer side: download the open model, encrypt
-it, upload the encrypted artifact to Hugging Face Hub, and hand back the
-manifest that was published alongside it.
+producer side follows: download the open model, encrypt it, upload the
+encrypted artifact to Hugging Face Hub, and hand back the manifest that was
+published alongside it.
 """
 
 from __future__ import annotations
@@ -172,9 +172,9 @@ def resolve_produce_version(target_repo: str, version: str, *, interactive: bool
 def _version_exists_message(version: str, target_repo: str, existing_versions: list[str]) -> str:
     """Build the error message for a rejected produce() call over an already-published version.
 
-    Artifact versions are immutable once published (see PLAN.md, decision
-    7), so this never resolves the conflict automatically; it only points
-    the operator at a version they can pass explicitly on retry.
+    Artifact versions are immutable once published (see docs/decisions.md,
+    decision 7), so this never resolves the conflict automatically; it only
+    points the operator at a version they can pass explicitly on retry.
     """
     message = f"version {version!r} already exists in {target_repo!r}"
     suggestion = suggest_next_version(existing_versions)

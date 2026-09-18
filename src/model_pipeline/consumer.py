@@ -1,9 +1,9 @@
 """Consumer orchestration: download, verify, decrypt, and unpack the model artifact.
 
 Ties together ``hub`` (network I/O), ``manifest`` (integrity metadata),
-``crypto`` (decryption), and ``packaging`` (tar) into the flow the enunciado
-describes for the consumer side: download the encrypted artifact and its
-manifest from Hugging Face Hub, verify the artifact hash before decrypting
+``crypto`` (decryption), and ``packaging`` (tar) into the flow the consumer
+side follows: download the encrypted artifact and its manifest from Hugging
+Face Hub, verify the artifact hash before decrypting
 and the plaintext hash after, and unpack the recovered model snapshot into a
 working directory. Loading the model into memory and running an inference
 smoke test are handled separately by :func:`load_and_predict`, so that the
