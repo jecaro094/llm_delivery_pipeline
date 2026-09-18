@@ -79,7 +79,10 @@ def _download_and_decrypt(
     repo_id: str, version: str, artifact_manifest: Manifest, master_key: bytes
 ) -> bytes:
     """Download the encrypted artifact, verify its hash, decrypt it, and verify the plaintext."""
-    encrypted_container = hub.download_artifact(repo_id, version)
+    try:
+        encrypted_container = hub.download_artifact(repo_id, version)
+    except HubError as exc:
+        raise ConsumerError(str(exc)) from exc
     verify_artifact_sha256(artifact_manifest, encrypted_container)
     try:
         plaintext_tar = crypto.decrypt(encrypted_container, master_key)
@@ -100,7 +103,10 @@ def resolve_consume_version(repo_id: str, version: str, *, interactive: bool) ->
     scripts/demo.sh's preflight check -- raises ConsumerError describing
     the mismatch instead of blocking on input that will never arrive.
     """
-    published_versions = hub.list_versions(repo_id)
+    try:
+        published_versions = hub.list_versions(repo_id)
+    except HubError as exc:
+        raise ConsumerError(str(exc)) from exc
     if version in published_versions:
         return version
     if not published_versions:

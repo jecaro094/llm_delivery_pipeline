@@ -82,5 +82,5 @@ def test_wrong_key_fails_the_end_to_end_flow(fake_model_dir: Path) -> None:
         plaintext_tar, test_const.TEST_MASTER_KEY, chunk_size=test_const.SMALL_TEST_CHUNK_SIZE
     )
 
-    with pytest.raises(crypto.DecryptionError):
+    with pytest.raises(crypto.DecryptionError, match="authentication failed"):
         crypto.decrypt(encrypted_container, test_const.OTHER_MASTER_KEY)

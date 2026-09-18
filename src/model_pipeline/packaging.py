@@ -36,15 +36,21 @@ def unpack_archive(data: bytes, destination_dir: Path) -> None:
     Every member is validated before extraction: absolute paths, `..`
     traversal, and symlinks/hardlinks whose target would resolve outside
     destination_dir are all rejected with :class:`PackagingError` instead of
-    being extracted.
+    being extracted. A malformed archive or a filesystem failure while
+    extracting also raises :class:`PackagingError`, instead of a raw
+    ``tarfile.TarError``/``OSError``, so callers only ever need to catch
+    one exception type at this boundary.
     """
     destination_dir.mkdir(parents=True, exist_ok=True)
     resolved_destination = destination_dir.resolve()
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
-        members = tar.getmembers()
-        for member in members:
-            _validate_member(member, resolved_destination)
-        tar.extractall(destination_dir, members=members, filter="data")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+            members = tar.getmembers()
+            for member in members:
+                _validate_member(member, resolved_destination)
+            tar.extractall(destination_dir, members=members, filter="data")
+    except (tarfile.TarError, OSError) as exc:
+        raise PackagingError(f"could not extract the archive: {exc}") from exc
 
 
 def _validate_member(member: tarfile.TarInfo, resolved_destination: Path) -> None:

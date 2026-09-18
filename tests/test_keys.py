@@ -39,14 +39,20 @@ def test_decode_key_from_raw_value() -> None:
 
 def test_decode_key_rejects_invalid_base64() -> None:
     """Non-base64 content must raise KeyLoadError instead of an unrelated exception."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="not valid base64"):
         keys.decode_key("not-valid-base64!!!")
 
 
 def test_decode_key_rejects_wrong_length() -> None:
     """A key that decodes to something other than 32 bytes must be rejected."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="must be .* bytes"):
         keys.decode_key(_b64(test_const.WRONG_LENGTH_KEY_BYTES))
+
+
+def test_load_key_from_file_translates_a_missing_file_to_key_load_error(tmp_path: Path) -> None:
+    """load_key_from_file must raise KeyLoadError, not a raw OSError, for a missing file."""
+    with pytest.raises(keys.KeyLoadError, match="could not read key file"):
+        keys.load_key_from_file(tmp_path / "does-not-exist")
 
 
 def test_resolve_key_prefers_file_over_value(tmp_path: Path) -> None:
@@ -68,5 +74,5 @@ def test_resolve_key_falls_back_to_value_when_no_file() -> None:
 
 def test_resolve_key_raises_when_nothing_provided() -> None:
     """Resolving with neither a file nor a value must fail explicitly."""
-    with pytest.raises(keys.KeyLoadError):
+    with pytest.raises(keys.KeyLoadError, match="no key material provided"):
         keys.resolve_key(key_file=None, key_value=None)

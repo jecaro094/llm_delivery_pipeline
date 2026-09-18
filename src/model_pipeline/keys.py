@@ -20,8 +20,17 @@ class KeyLoadError(Exception):
 
 
 def load_key_from_file(path: Path) -> bytes:
-    """Read and decode the base64-encoded master key stored at path."""
-    raw = path.read_text(encoding="utf-8")
+    """Read and decode the base64-encoded master key stored at path.
+
+    Raises KeyLoadError, instead of a raw OSError, when path does not
+    exist or cannot be read -- a real, previously observed failure mode: a
+    key file mounted from a Kubernetes Secret was unreadable until the
+    pod's ``fsGroup`` was set.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise KeyLoadError(f"could not read key file {path}: {exc}") from exc
     return decode_key(raw)
 
 

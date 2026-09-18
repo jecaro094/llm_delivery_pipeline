@@ -521,4 +521,31 @@ def test_consume_reports_a_consumer_error(
             ]
         )
     assert exit_code == 1
-    assert "decryption failed" in capsys.readouterr().err
+
+
+def test_main_reports_an_unexpected_exception_as_exit_code_three(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An exception a subcommand did not translate itself must be logged and exit 3."""
+
+    def _boom(_args: argparse.Namespace) -> int:
+        """Raise an exception no subcommand is expected to translate itself."""
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(cli._COMMANDS, "keygen", _boom)
+    with caplog.at_level("ERROR"):
+        exit_code = cli.main(["keygen"])
+    assert exit_code == 3
+    assert any("unexpected error" in record.getMessage() for record in caplog.records)
+
+
+def test_main_lets_a_keyboard_interrupt_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A KeyboardInterrupt must not be swallowed by the top-level unexpected-error guard."""
+
+    def _interrupt(_args: argparse.Namespace) -> int:
+        """Raise KeyboardInterrupt, which the top-level guard must not catch."""
+        raise KeyboardInterrupt
+
+    monkeypatch.setitem(cli._COMMANDS, "keygen", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["keygen"])

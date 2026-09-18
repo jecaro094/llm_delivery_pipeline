@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import logging
 import secrets
 import sys
 from collections.abc import Callable
@@ -43,6 +44,8 @@ from model_pipeline.manifest import ManifestError, serialize_manifest
 from model_pipeline.packaging import PackagingError
 from model_pipeline.producer import ProducerError, produce, resolve_produce_version
 from model_pipeline.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def _add_repo_argument(parser: argparse.ArgumentParser) -> None:
@@ -75,7 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="model_pipeline",
         epilog="See .env.example at the repository root for the full reference of the "
-        "environment variables named above.",
+        "environment variables named above. Exit codes: 0 success, 1 an expected failure "
+        "(a conflict, the wrong key, an integrity mismatch), 2 a bad invocation or missing "
+        "configuration, 3 an unexpected internal error.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -358,7 +363,18 @@ _COMMANDS = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse argv and dispatch to the selected subcommand, returning its exit code."""
+    """Parse argv, dispatch to the selected subcommand, and return its exit code.
+
+    An exception the subcommand itself did not already turn into a clean
+    error message is logged through the logging channel, instead of
+    printing a raw traceback to a Kubernetes Job/Pod log, and reported as
+    exit code 3. ``KeyboardInterrupt`` and ``SystemExit`` are not
+    ``Exception`` subclasses, so they propagate unchanged.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
-    return _COMMANDS[args.command](args)
+    try:
+        return _COMMANDS[args.command](args)
+    except Exception:
+        logger.exception("%s failed with an unexpected error", args.command)
+        return 3

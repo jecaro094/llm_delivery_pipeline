@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
-from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 
 import model_pipeline.constants as const
 
@@ -29,7 +29,10 @@ class HubError(Exception):
 
 def resolve_model_revision(repo_id: str, revision: str | None = None) -> str:
     """Resolve repo_id (at an optional revision) to its immutable commit SHA."""
-    info = HfApi().model_info(repo_id, revision=revision)
+    try:
+        info = HfApi().model_info(repo_id, revision=revision)
+    except HfHubHTTPError as exc:
+        raise HubError(f"could not resolve a revision for {repo_id!r}: {exc}") from exc
     if info.sha is None:
         raise HubError(f"could not resolve a commit sha for {repo_id!r}")
     return info.sha
@@ -38,13 +41,21 @@ def resolve_model_revision(repo_id: str, revision: str | None = None) -> str:
 def download_model_snapshot(repo_id: str, revision: str, local_dir: Path) -> None:
     """Download the full snapshot of repo_id at revision into local_dir."""
     logger.info("downloading model snapshot: repo=%s revision=%s", repo_id, revision)
-    snapshot_download(repo_id=repo_id, revision=revision, local_dir=str(local_dir))
+    try:
+        snapshot_download(repo_id=repo_id, revision=revision, local_dir=str(local_dir))
+    except HfHubHTTPError as exc:
+        raise HubError(
+            f"could not download the snapshot for {repo_id!r} at {revision!r}: {exc}"
+        ) from exc
 
 
 def ensure_public_repo(repo_id: str, token: str) -> None:
     """Create repo_id as a public model repo if it does not already exist."""
     logger.info("ensuring target repo exists: repo=%s", repo_id)
-    HfApi().create_repo(repo_id=repo_id, token=token, private=False, exist_ok=True)
+    try:
+        HfApi().create_repo(repo_id=repo_id, token=token, private=False, exist_ok=True)
+    except HfHubHTTPError as exc:
+        raise HubError(f"could not create or access the repo {repo_id!r}: {exc}") from exc
 
 
 def list_versions(repo_id: str) -> list[str]:
@@ -60,6 +71,8 @@ def list_versions(repo_id: str) -> list[str]:
         files = HfApi().list_repo_files(repo_id)
     except RepositoryNotFoundError:
         return []
+    except HfHubHTTPError as exc:
+        raise HubError(f"could not list published versions for {repo_id!r}: {exc}") from exc
     versions = {
         f[len(prefix) : -len(suffix)] for f in files if f.startswith(prefix) and f.endswith(suffix)
     }
@@ -72,18 +85,23 @@ def upload_artifact(
     """Upload the encrypted artifact and its manifest for version under repo_id."""
     logger.info("uploading artifact: repo=%s version=%s", repo_id, version)
     api = HfApi()
-    api.upload_file(
-        path_or_fileobj=artifact_bytes,
-        path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}",
-        repo_id=repo_id,
-        token=token,
-    )
-    api.upload_file(
-        path_or_fileobj=manifest_bytes,
-        path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.MANIFEST_FILENAME}",
-        repo_id=repo_id,
-        token=token,
-    )
+    try:
+        api.upload_file(
+            path_or_fileobj=artifact_bytes,
+            path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}",
+            repo_id=repo_id,
+            token=token,
+        )
+        api.upload_file(
+            path_or_fileobj=manifest_bytes,
+            path_in_repo=f"{const.VERSIONS_PREFIX}/{version}/{const.MANIFEST_FILENAME}",
+            repo_id=repo_id,
+            token=token,
+        )
+    except HfHubHTTPError as exc:
+        raise HubError(
+            f"could not upload the artifact for {repo_id!r} version {version!r}: {exc}"
+        ) from exc
 
 
 def download_manifest(repo_id: str, version: str) -> bytes:
@@ -103,13 +121,30 @@ def download_manifest(repo_id: str, version: str) -> bytes:
         )
     except (RepositoryNotFoundError, EntryNotFoundError) as exc:
         raise HubError(f"no manifest published for {repo_id!r} version {version!r}") from exc
+    except HfHubHTTPError as exc:
+        raise HubError(
+            f"could not download the manifest for {repo_id!r} version {version!r}: {exc}"
+        ) from exc
     return Path(local_path).read_bytes()
 
 
 def download_artifact(repo_id: str, version: str) -> bytes:
-    """Download and return the raw encrypted artifact bytes published for version under repo_id."""
+    """Download and return the raw encrypted artifact bytes published for version under repo_id.
+
+    Raises HubError, instead of leaking the underlying huggingface_hub
+    exception, on the same not-found and transport failures download_manifest
+    already guards against.
+    """
     logger.info("downloading artifact: repo=%s version=%s", repo_id, version)
-    local_path = hf_hub_download(
-        repo_id=repo_id, filename=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}"
-    )
+    try:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=f"{const.VERSIONS_PREFIX}/{version}/{const.ARTIFACT_FILENAME}",
+        )
+    except (RepositoryNotFoundError, EntryNotFoundError) as exc:
+        raise HubError(f"no artifact published for {repo_id!r} version {version!r}") from exc
+    except HfHubHTTPError as exc:
+        raise HubError(
+            f"could not download the artifact for {repo_id!r} version {version!r}: {exc}"
+        ) from exc
     return Path(local_path).read_bytes()

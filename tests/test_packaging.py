@@ -31,7 +31,7 @@ def test_unpack_rejects_parent_directory_traversal(tmp_path: Path) -> None:
     archive = _build_malicious_tar(name="../escaped.txt", content=b"pwned")
     destination = tmp_path / "safe-dest"
 
-    with pytest.raises(packaging.PackagingError):
+    with pytest.raises(packaging.PackagingError, match="outside destination"):
         packaging.unpack_archive(archive, destination)
 
     assert not (tmp_path / "escaped.txt").exists()
@@ -42,7 +42,7 @@ def test_unpack_rejects_absolute_path_member(tmp_path: Path) -> None:
     archive = _build_malicious_tar(name="/etc/evil.txt", content=b"pwned")
     destination = tmp_path / "safe-dest"
 
-    with pytest.raises(packaging.PackagingError):
+    with pytest.raises(packaging.PackagingError, match="absolute path"):
         packaging.unpack_archive(archive, destination)
 
 
@@ -57,7 +57,7 @@ def test_unpack_rejects_absolute_symlink(tmp_path: Path) -> None:
     archive = buffer.getvalue()
 
     destination = tmp_path / "safe-dest"
-    with pytest.raises(packaging.PackagingError):
+    with pytest.raises(packaging.PackagingError, match="escaping destination"):
         packaging.unpack_archive(archive, destination)
 
 
@@ -72,7 +72,7 @@ def test_unpack_rejects_symlink_escaping_destination_via_relative_path(tmp_path:
     archive = buffer.getvalue()
 
     destination = tmp_path / "safe-dest"
-    with pytest.raises(packaging.PackagingError):
+    with pytest.raises(packaging.PackagingError, match="escaping destination"):
         packaging.unpack_archive(archive, destination)
 
 
@@ -88,6 +88,13 @@ def test_unpack_rejects_device_file(tmp_path: Path) -> None:
     destination = tmp_path / "safe-dest"
     with pytest.raises(packaging.PackagingError, match="device file"):
         packaging.unpack_archive(archive, destination)
+
+
+def test_unpack_translates_a_malformed_archive_to_packaging_error(tmp_path: Path) -> None:
+    """A byte string that is not a valid tar archive must raise PackagingError, not TarError."""
+    destination = tmp_path / "safe-dest"
+    with pytest.raises(packaging.PackagingError, match="could not extract the archive"):
+        packaging.unpack_archive(b"not a tar archive", destination)
 
 
 def _build_malicious_tar(*, name: str, content: bytes) -> bytes:

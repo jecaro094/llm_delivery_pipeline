@@ -52,15 +52,21 @@ def produce(
     rejected before encryption if its architecture cannot be auto-detected
     (see :func:`_validate_model_type`).
     """
-    hub.ensure_public_repo(target_repo, token=hf_token)
-    existing_versions = hub.list_versions(target_repo)
+    try:
+        hub.ensure_public_repo(target_repo, token=hf_token)
+        existing_versions = hub.list_versions(target_repo)
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
     if version in existing_versions:
         raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
 
     with tempfile.TemporaryDirectory(prefix="model-pipeline-produce-") as raw_workdir:
         workdir = Path(raw_workdir)
-        resolved_revision = hub.resolve_model_revision(source_model)
-        hub.download_model_snapshot(source_model, resolved_revision, workdir)
+        try:
+            resolved_revision = hub.resolve_model_revision(source_model)
+            hub.download_model_snapshot(source_model, resolved_revision, workdir)
+        except hub.HubError as exc:
+            raise ProducerError(str(exc)) from exc
         _validate_model_type(workdir, source_model)
         plaintext_tar = packaging.pack_directory(workdir)
 
@@ -89,13 +95,16 @@ def produce(
         producer=ProducerInfo(tool=const.TOOL_NAME, tool_version=__version__),
     )
 
-    hub.upload_artifact(
-        target_repo,
-        version,
-        artifact_bytes=encrypted_container,
-        manifest_bytes=serialize_manifest(artifact_manifest),
-        token=hf_token,
-    )
+    try:
+        hub.upload_artifact(
+            target_repo,
+            version,
+            artifact_bytes=encrypted_container,
+            manifest_bytes=serialize_manifest(artifact_manifest),
+            token=hf_token,
+        )
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
 
     return artifact_manifest
 
@@ -113,7 +122,10 @@ def resolve_produce_version(target_repo: str, version: str, *, interactive: bool
     of blocking on input that will never arrive, exactly like produce()
     itself already does.
     """
-    existing_versions = hub.list_versions(target_repo)
+    try:
+        existing_versions = hub.list_versions(target_repo)
+    except hub.HubError as exc:
+        raise ProducerError(str(exc)) from exc
     if version not in existing_versions:
         return version
     if not interactive:

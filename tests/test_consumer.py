@@ -184,7 +184,7 @@ def test_consume_rejects_a_tampered_artifact(
     )
     monkeypatch.setattr(consumer, "hub", fake)
 
-    with pytest.raises(manifest_module.ManifestError):
+    with pytest.raises(manifest_module.ManifestError, match="artifact sha256 mismatch"):
         consume(
             repo_id=REPO_ID,
             version=VERSION,
