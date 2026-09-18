@@ -63,7 +63,7 @@ def test_verify_artifact_sha256_detects_mismatch() -> None:
     """A tampered or corrupted artifact must fail sha256 verification."""
     sample_manifest = _build_sample_manifest(b"ciphertext-bytes", b"plaintext-bytes")
 
-    with pytest.raises(manifest.ManifestError):
+    with pytest.raises(manifest.ManifestError, match="artifact sha256 mismatch"):
         manifest.verify_artifact_sha256(sample_manifest, b"different-ciphertext-bytes")
 
 
@@ -71,7 +71,7 @@ def test_verify_plaintext_sha256_detects_mismatch() -> None:
     """An incorrect or incomplete decryption must fail plaintext_sha256 verification."""
     sample_manifest = _build_sample_manifest(b"ciphertext-bytes", b"plaintext-bytes")
 
-    with pytest.raises(manifest.ManifestError):
+    with pytest.raises(manifest.ManifestError, match="plaintext sha256 mismatch"):
         manifest.verify_plaintext_sha256(sample_manifest, b"different-plaintext-bytes")
 
 
@@ -92,11 +92,11 @@ def test_deserialize_rejects_unknown_manifest_version() -> None:
     tampered["manifest_version"] = "99.0"
     tampered_bytes = manifest.serialize_manifest(tampered)  # type: ignore[arg-type]
 
-    with pytest.raises(manifest.ManifestError):
+    with pytest.raises(manifest.ManifestError, match="unsupported manifest_version"):
         manifest.deserialize_manifest(tampered_bytes)
 
 
 def test_deserialize_rejects_invalid_json() -> None:
     """Malformed JSON must raise ManifestError rather than an unrelated exception."""
-    with pytest.raises(manifest.ManifestError):
+    with pytest.raises(manifest.ManifestError, match="invalid manifest JSON"):
         manifest.deserialize_manifest(b"not json")

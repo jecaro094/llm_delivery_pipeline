@@ -32,3 +32,4 @@ class Settings(BaseSettings):
     model_version: str | None = None
     source_model: str = const.DEFAULT_SOURCE_MODEL
     model_workdir: Path | None = None
+    log_level: str = const.DEFAULT_LOG_LEVEL

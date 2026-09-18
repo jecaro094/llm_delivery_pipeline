@@ -87,6 +87,19 @@ TOOL_NAME = "model_pipeline"
 # so an unattended run against a non-interactive stdin can never hang forever.
 MAX_PROMPT_ATTEMPTS = 5
 
+# --- Logging ---
+
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+DEFAULT_LOG_LEVEL = "info"
+LOG_LEVEL_CHOICES = ("debug", "info", "warning", "error")
+
+# Third-party loggers whose own INFO/DEBUG chatter (HTTP retries, connection
+# pooling, file locking) would otherwise drown out this pipeline's own
+# diagnostics; always held at WARNING regardless of --log-level. httpx is
+# the HTTP client huggingface_hub itself uses and logs one INFO line per
+# request, which is what actually shows up unless it is included here too.
+NOISY_LOGGERS = ("huggingface_hub", "httpx", "urllib3", "filelock")
+
 # --- Source model validation ---
 
 # Some published Hugging Face repos (see PLAN.md, decision #1) predate the

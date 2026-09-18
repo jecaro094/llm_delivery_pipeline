@@ -40,6 +40,7 @@ from model_pipeline.consumer import (
     resolve_consume_version,
 )
 from model_pipeline.keys import KeyLoadError, resolve_key
+from model_pipeline.logging_config import configure_logging
 from model_pipeline.manifest import ManifestError, serialize_manifest
 from model_pipeline.packaging import PackagingError
 from model_pipeline.producer import ProducerError, produce, resolve_produce_version
@@ -81,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
         "environment variables named above. Exit codes: 0 success, 1 an expected failure "
         "(a conflict, the wrong key, an integrity mismatch), 2 a bad invocation or missing "
         "configuration, 3 an unexpected internal error.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=const.LOG_LEVEL_CHOICES,
+        default=None,
+        help="verbosity of diagnostics written to stderr (default: LOG_LEVEL, "
+        f"currently {const.DEFAULT_LOG_LEVEL!r})",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -175,7 +183,7 @@ def _require(values: dict[str, object | None], command: str) -> int | None:
     missing = [flag for flag, value in values.items() if value is None]
     if not missing:
         return None
-    print(f"{command} requires {' and '.join(missing)} (or their env vars)", file=sys.stderr)
+    logger.error("%s requires %s (or their env vars)", command, " and ".join(missing))
     return 2
 
 
@@ -212,8 +220,8 @@ def _resolve_version(
 
 
 def _fail(command: str, exc: Exception) -> int:
-    """Print '<command> failed: <exc>' to stderr and return the exit code for that failure."""
-    print(f"{command} failed: {exc}", file=sys.stderr)
+    """Log '<command> failed: <exc>' and return the exit code for that failure."""
+    logger.error("%s failed: %s", command, exc)
     return 1
 
 
@@ -259,13 +267,13 @@ def cmd_produce(args: argparse.Namespace) -> int:
         return exit_code
 
     if not settings.hf_token:
-        print("HF_TOKEN must be set to publish to Hugging Face Hub", file=sys.stderr)
+        logger.error("HF_TOKEN must be set to publish to Hugging Face Hub")
         return 2
 
     try:
         master_key = _resolve_master_key(settings)
     except KeyLoadError as exc:
-        print(f"could not load the encryption key: {exc}", file=sys.stderr)
+        logger.error("could not load the encryption key: %s", exc)
         return 2
 
     chunk_size = _setting_or_arg(args.chunk_size, const.DEFAULT_CHUNK_SIZE)
@@ -332,7 +340,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
     try:
         master_key = _resolve_master_key(settings, key_file_override=args.key_file)
     except KeyLoadError as exc:
-        print(f"could not load the encryption key: {exc}", file=sys.stderr)
+        logger.error("could not load the encryption key: %s", exc)
         return 2
 
     try:
@@ -342,14 +350,16 @@ def cmd_consume(args: argparse.Namespace) -> int:
     except (ConsumerError, ManifestError, PackagingError) as exc:
         return _fail("consume", exc)
 
-    print(f"model verified and decrypted from {repo_id} version {version} into {workdir}")
+    logger.info(
+        "model verified and decrypted from %s version %s into %s", repo_id, version, workdir
+    )
 
     if args.smoke_test:
         try:
             prediction = load_and_predict(workdir, artifact_manifest["model"]["task_hint"])
         except ConsumerError as exc:
             return _fail("smoke test", exc)
-        print(f"smoke test prediction: {prediction}")
+        logger.info("smoke test prediction: %s", prediction)
 
     return 0
 
@@ -373,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    log_level_name = _setting_or_arg(args.log_level, Settings().log_level)
+    configure_logging(getattr(logging, log_level_name.upper()))
     try:
         return _COMMANDS[args.command](args)
     except Exception:

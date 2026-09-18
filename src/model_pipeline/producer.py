@@ -10,7 +10,7 @@ manifest that was published alongside it.
 from __future__ import annotations
 
 import json
-import sys
+import logging
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +28,8 @@ from model_pipeline.manifest import (
     serialize_manifest,
 )
 from model_pipeline.prompt import PromptError, prompt_for_value
+
+logger = logging.getLogger(__name__)
 
 
 class ProducerError(Exception):
@@ -64,13 +66,23 @@ def produce(
         workdir = Path(raw_workdir)
         try:
             resolved_revision = hub.resolve_model_revision(source_model)
+            logger.info(
+                "resolved source model revision: repo=%s revision=%s",
+                source_model,
+                resolved_revision,
+            )
             hub.download_model_snapshot(source_model, resolved_revision, workdir)
+            logger.info(
+                "downloaded model snapshot: repo=%s revision=%s", source_model, resolved_revision
+            )
         except hub.HubError as exc:
             raise ProducerError(str(exc)) from exc
         _validate_model_type(workdir, source_model)
         plaintext_tar = packaging.pack_directory(workdir)
+        logger.info("packed model snapshot into archive: size_bytes=%d", len(plaintext_tar))
 
     encrypted_container = crypto.encrypt(plaintext_tar, master_key, chunk_size=chunk_size)
+    logger.info("encrypted archive: size_bytes=%d", len(encrypted_container))
 
     artifact_manifest = build_manifest(
         created_at=datetime.now(UTC).isoformat(),
@@ -105,6 +117,7 @@ def produce(
         )
     except hub.HubError as exc:
         raise ProducerError(str(exc)) from exc
+    logger.info("upload complete: repo=%s version=%s", target_repo, version)
 
     return artifact_manifest
 
@@ -131,7 +144,7 @@ def resolve_produce_version(target_repo: str, version: str, *, interactive: bool
     if not interactive:
         raise ProducerError(_version_exists_message(version, target_repo, existing_versions))
 
-    print(_version_exists_message(version, target_repo, existing_versions), file=sys.stderr)
+    logger.warning(_version_exists_message(version, target_repo, existing_versions))
     suggestion = suggest_next_version(existing_versions)
     hint = f" [{suggestion}]" if suggestion else ""
 

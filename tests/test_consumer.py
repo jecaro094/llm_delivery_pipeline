@@ -9,6 +9,7 @@ tests so the suite never needs torch installed.
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from pathlib import Path
@@ -131,6 +132,26 @@ def test_consume_downloads_verifies_decrypts_and_unpacks(
         assert (workdir / relative_path).read_bytes() == (
             fake_model_dir / relative_path
         ).read_bytes()
+
+
+def test_consume_logs_every_milestone(
+    fake_hub_with_valid_artifact: FakeHub, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """consume must log the manifest fetch, key_id check, hash checks, decryption, and unpack."""
+    with caplog.at_level(logging.INFO):
+        consume(
+            repo_id=REPO_ID,
+            version=VERSION,
+            master_key=test_const.TEST_MASTER_KEY,
+            workdir=tmp_path / "restored-model",
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("manifest fetched" in message for message in messages)
+    assert any("key_id checked" in message for message in messages)
+    assert any("artifact sha256 verified" in message for message in messages)
+    assert any("artifact decrypted" in message for message in messages)
+    assert any("plaintext sha256 verified" in message for message in messages)
+    assert any("unpacked model snapshot" in message for message in messages)
 
 
 def test_consume_rejects_key_id_mismatch(

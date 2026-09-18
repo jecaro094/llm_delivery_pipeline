@@ -13,7 +13,7 @@ pulling ``transformers``/``torch`` into the test environment.
 
 from __future__ import annotations
 
-import sys
+import logging
 from pathlib import Path
 
 import model_pipeline.constants as const
@@ -26,6 +26,8 @@ from model_pipeline.manifest import (
     verify_plaintext_sha256,
 )
 from model_pipeline.prompt import PromptError, prompt_for_value
+
+logger = logging.getLogger(__name__)
 
 
 class ConsumerError(Exception):
@@ -50,6 +52,7 @@ def consume(
     artifact_manifest = _fetch_and_check_manifest(repo_id, version, expected_key_id)
     plaintext_tar = _download_and_decrypt(repo_id, version, artifact_manifest, master_key)
     packaging.unpack_archive(plaintext_tar, workdir)
+    logger.info("unpacked model snapshot into %s", workdir)
     return artifact_manifest
 
 
@@ -66,12 +69,14 @@ def _fetch_and_check_manifest(repo_id: str, version: str, expected_key_id: str) 
         manifest_bytes = hub.download_manifest(repo_id, version)
     except HubError as exc:
         raise ConsumerError(str(exc)) from exc
+    logger.info("manifest fetched: repo=%s version=%s", repo_id, version)
     artifact_manifest = deserialize_manifest(manifest_bytes)
     actual_key_id = artifact_manifest["encryption"]["key_id"]
     if actual_key_id != expected_key_id:
         raise ConsumerError(
             f"key_id mismatch: manifest expects {actual_key_id!r}, consumer has {expected_key_id!r}"
         )
+    logger.info("key_id checked: key_id=%s", actual_key_id)
     return artifact_manifest
 
 
@@ -84,11 +89,14 @@ def _download_and_decrypt(
     except HubError as exc:
         raise ConsumerError(str(exc)) from exc
     verify_artifact_sha256(artifact_manifest, encrypted_container)
+    logger.info("artifact sha256 verified: repo=%s version=%s", repo_id, version)
     try:
         plaintext_tar = crypto.decrypt(encrypted_container, master_key)
     except crypto.DecryptionError as exc:
         raise ConsumerError(f"decryption failed, likely the wrong key: {exc}") from exc
+    logger.info("artifact decrypted: repo=%s version=%s", repo_id, version)
     verify_plaintext_sha256(artifact_manifest, plaintext_tar)
+    logger.info("plaintext sha256 verified: repo=%s version=%s", repo_id, version)
     return plaintext_tar
 
 
@@ -119,7 +127,7 @@ def resolve_consume_version(repo_id: str, version: str, *, interactive: bool) ->
     if not interactive:
         raise ConsumerError(message)
 
-    print(message, file=sys.stderr)
+    logger.warning(message)
     latest = published_versions[-1]
 
     def invalid_message(candidate: str) -> str:
