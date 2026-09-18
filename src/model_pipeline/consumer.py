@@ -25,6 +25,7 @@ from model_pipeline.manifest import (
     verify_artifact_sha256,
     verify_plaintext_sha256,
 )
+from model_pipeline.prompt import PromptError, prompt_for_value
 
 
 class ConsumerError(Exception):
@@ -114,16 +115,20 @@ def resolve_consume_version(repo_id: str, version: str, *, interactive: bool) ->
 
     print(message, file=sys.stderr)
     latest = published_versions[-1]
-    while True:
-        print(f"Enter a published version to consume [{latest}]: ", end="", file=sys.stderr)
-        sys.stderr.flush()
-        candidate = input().strip() or latest
-        if candidate in published_versions:
-            return candidate
-        print(
-            f"version {candidate!r} is not published in {repo_id!r}; try another",
-            file=sys.stderr,
+
+    def invalid_message(candidate: str) -> str:
+        """Explain that candidate is not among published_versions."""
+        return f"version {candidate!r} is not published in {repo_id!r}; try another"
+
+    try:
+        return prompt_for_value(
+            prompt=f"Enter a published version to consume [{latest}]: ",
+            default=latest,
+            is_valid=lambda candidate: candidate in published_versions,
+            invalid_message=invalid_message,
         )
+    except PromptError as exc:
+        raise ConsumerError(str(exc)) from exc
 
 
 def load_and_predict(workdir: Path, task_hint: str) -> str:

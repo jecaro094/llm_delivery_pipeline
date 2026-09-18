@@ -27,6 +27,7 @@ from model_pipeline.manifest import (
     compute_sha256,
     serialize_manifest,
 )
+from model_pipeline.prompt import PromptError, prompt_for_value
 
 
 class ProducerError(Exception):
@@ -120,20 +121,27 @@ def resolve_produce_version(target_repo: str, version: str, *, interactive: bool
 
     print(_version_exists_message(version, target_repo, existing_versions), file=sys.stderr)
     suggestion = suggest_next_version(existing_versions)
-    while True:
-        hint = f" [{suggestion}]" if suggestion else ""
-        print(f"Enter a version to publish under {target_repo!r}{hint}: ", end="", file=sys.stderr)
-        sys.stderr.flush()
-        candidate = input().strip() or suggestion
+    hint = f" [{suggestion}]" if suggestion else ""
+
+    def is_valid(candidate: str) -> bool:
+        """Return True when candidate is non-empty and not already published."""
+        return bool(candidate) and candidate not in existing_versions
+
+    def invalid_message(candidate: str) -> str:
+        """Explain why candidate was rejected: blank input, or an already-published version."""
         if not candidate:
-            print("a version is required", file=sys.stderr)
-            continue
-        if candidate not in existing_versions:
-            return candidate
-        print(
-            f"version {candidate!r} already exists in {target_repo!r}; try another",
-            file=sys.stderr,
+            return "a version is required"
+        return f"version {candidate!r} already exists in {target_repo!r}; try another"
+
+    try:
+        return prompt_for_value(
+            prompt=f"Enter a version to publish under {target_repo!r}{hint}: ",
+            default=suggestion,
+            is_valid=is_valid,
+            invalid_message=invalid_message,
         )
+    except PromptError as exc:
+        raise ProducerError(str(exc)) from exc
 
 
 def _version_exists_message(version: str, target_repo: str, existing_versions: list[str]) -> str:

@@ -260,6 +260,17 @@ def test_resolve_consume_version_prompt_blank_accepts_the_latest(
     assert resolved == "1.1.0"
 
 
+def test_resolve_consume_version_raises_when_operator_never_enters_a_published_version(
+    fake_hub_with_valid_artifact: FakeHub,
+) -> None:
+    """resolve_consume_version must raise ConsumerError, not hang, after repeated mismatches."""
+    with (
+        patch("builtins.input", return_value="9.9.9"),
+        pytest.raises(ConsumerError, match="no valid value entered"),
+    ):
+        resolve_consume_version(REPO_ID, "unpublished", interactive=True)
+
+
 def test_load_and_predict_rejects_an_unsupported_task_hint(tmp_path: Path) -> None:
     """load_and_predict must reject an unsupported task hint before importing transformers."""
     with pytest.raises(ConsumerError, match="unsupported task hint"):

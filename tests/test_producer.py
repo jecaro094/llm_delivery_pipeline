@@ -245,3 +245,16 @@ def test_resolve_produce_version_reprompts_on_blank_input_without_a_suggestion(
     with patch("builtins.input", side_effect=["", "def"]):
         resolved = resolve_produce_version(TARGET_REPO, "abc", interactive=True)
     assert resolved == "def"
+
+
+def test_resolve_produce_version_raises_when_operator_never_enters_a_free_version(
+    fake_hub: FakeHub,
+) -> None:
+    """resolve_produce_version must raise ProducerError, not hang, after repeated conflicts."""
+    fake_hub.remote_dir.joinpath(TARGET_REPO, "1.0.0").mkdir(parents=True)
+
+    with (
+        patch("builtins.input", return_value="1.0.0"),
+        pytest.raises(ProducerError, match="no valid value entered"),
+    ):
+        resolve_produce_version(TARGET_REPO, "1.0.0", interactive=True)

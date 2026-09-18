@@ -81,6 +81,12 @@ DEFAULT_TASK_HINT = "fill-mask"
 
 TOOL_NAME = "model_pipeline"
 
+# --- Interactive prompts ---
+
+# Number of rejected candidates prompt_for_value tolerates before giving up,
+# so an unattended run against a non-interactive stdin can never hang forever.
+MAX_PROMPT_ATTEMPTS = 5
+
 # --- Source model validation ---
 
 # Some published Hugging Face repos (see PLAN.md, decision #1) predate the
