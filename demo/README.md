@@ -27,16 +27,18 @@ with one of the numbered, real versions used elsewhere.
 ```bash
 source .venv/bin/activate   # after `pip install -e ".[consumer,dev]"`, see the main README
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=demo/encryption-key \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
     --version demo \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
+
+rm -rf "${WORKDIR}"
 ```
 
 No `HF_TOKEN` needed: the repo is public, and this command only downloads and decrypts. This runs
 the full consumer path — download, decryption, model loading, and a smoke test — against a real
 published artifact, in one command.
-
-Remove `--workdir` once you're done inspecting the decrypted model (`rm -rf /tmp/model`).

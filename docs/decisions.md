@@ -74,6 +74,27 @@ terminates. Fully in-memory decryption with no filesystem would be purer, but `t
 expects file paths to load a model from, which would force fragile workarounds; tmpfs gets 95% of
 the benefit with straightforward, robust code.
 
+### Local runs (outside Kubernetes) do not decrypt into `/tmp` either
+
+Not part of the original decision table, but the same reasoning applies once `consume` runs
+directly on a workstation (Option 2, the fast path, and `demo/README.md`) rather than inside the
+Pod above. Early versions of those docs pointed `--workdir` at `/tmp/model`.
+
+**Alternatives considered**: a fixed path under `/tmp`, an operator-chosen throwaway directory.
+
+**Decision**: every local-run example uses a throwaway directory the operator creates and removes
+themselves (e.g. `mktemp -d`, or any directory outside `/tmp`), never a fixed `/tmp` path.
+
+**Why**: `/tmp` on Linux is normally a real, on-disk, world-readable filesystem shared between every
+user and process on the machine — using it for the decrypted model would demonstrate exactly the
+disk exposure this pipeline's architecture avoids in the Kubernetes case above (macOS's per-user
+`/tmp` is still disk-backed). Nothing removes it either: the model sits there, readable by other
+local accounts, until the OS eventually reclaims it, which on macOS can take days. A fixed,
+predictable path also invites collisions between concurrent local runs. `/tmp` remains the right
+choice for the *non-sensitive* Hugging Face Hub cache inside the container image (`HF_HOME=/tmp/huggingface`),
+which exists only to satisfy `readOnlyRootFilesystem: true` and is discarded with the pod — that
+case is unrelated to where the plaintext model itself lands.
+
 ## 6. The decryption key is delivered as a mounted file, not an environment variable
 
 **Alternatives considered**: `env.valueFrom.secretKeyRef`.

@@ -71,11 +71,13 @@ python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[consumer,dev]"
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=demo/encryption-key \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
     --version demo \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -116,11 +118,13 @@ ENCRYPTION_KEY_FILE=.encryption-key \
     --target-repo <namespace>/bert-tiny-encrypted \
     --version <version>
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=.encryption-key \
   python -m model_pipeline consume \
     --repo <namespace>/bert-tiny-encrypted \
     --version <version> \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -195,8 +199,9 @@ encryption isn't actually protecting anything.
 After any option that created cluster objects or a local decrypted-model directory, clean them up
 and report what was removed:
 
-- **Option 2 / the fast path**: remove the `--workdir` directory the consumer wrote to (e.g. `rm -rf
-  /tmp/model`).
+- **Option 2 / the fast path**: remove the `--workdir` directory the consumer wrote to (`rm -rf
+  "${WORKDIR}"`, the `mktemp -d` directory created above) -- never leave it under a fixed `/tmp`
+  path, see the "Running each option" commands above and `docs/decisions.md` for why.
 - **Option 3**: run `./scripts/demo.sh --cleanup` up front to have the script clean up automatically
   once it prints its final logs, or `./scripts/cleanup.sh` afterwards — both remove the producer Job,
   the consumer Pod, and both Secrets from the `confidential-models` namespace, and are safe to run

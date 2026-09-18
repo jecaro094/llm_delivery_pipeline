@@ -41,6 +41,22 @@ alongside it. For *why* each choice was made over its alternatives, see [`decisi
 ever exists inside the cluster (etcd and the memory of the pod that mounts it). The manifest is
 public and contains no cryptographic material.
 
+## Where the decrypted model lives
+
+Three different paths hold three different kinds of data, and only one of them is sensitive:
+
+| Where | What lives there | Path |
+| --- | --- | --- |
+| Consumer Pod, in-cluster | the **decrypted plaintext model** | `/mnt/model`, an `emptyDir` with `medium: Memory` (tmpfs) — never touches the node's disk, gone when the pod terminates |
+| Producer/consumer containers | the Hugging Face Hub cache | `/tmp` (`HF_HOME=/tmp/huggingface`), a plain disk-backed `emptyDir` — non-sensitive, exists only so a `readOnlyRootFilesystem: true` container has a writable scratch path |
+| A local run (Options 2, the fast path, `demo/README.md`) | the **decrypted plaintext model** | an operator-owned throwaway directory the run creates and removes itself, never a fixed `/tmp` path |
+
+The plaintext model is treated the same way in all three contexts: never written to shared,
+persistent, world-readable storage, and cleaned up automatically or by the operator once it is no
+longer needed. `/tmp` is only ever used for the non-sensitive Hub cache, never for the model
+itself — see [`decisions.md`](decisions.md#local-runs-outside-kubernetes-do-not-decrypt-into-tmp-either)
+for the full reasoning.
+
 ## Encrypted container format
 
 A small, self-describing container, not a third-party format, so every field is intentional and

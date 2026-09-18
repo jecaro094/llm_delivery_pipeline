@@ -87,12 +87,16 @@ python3.12 -m venv .venv   # skip if a .venv already exists
 source .venv/bin/activate
 pip install -e ".[consumer,dev]"
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=demo/encryption-key \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
     --version demo \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
+
+rm -rf "${WORKDIR}"
 ```
 
 ### Option 1 — Run the test suite only
@@ -145,11 +149,13 @@ ENCRYPTION_KEY_FILE=.encryption-key \
     --target-repo <your-namespace>/bert-tiny-encrypted \
     --version 1.0.0
 
+WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
+
 ENCRYPTION_KEY_FILE=.encryption-key \
   python -m model_pipeline consume \
     --repo <your-namespace>/bert-tiny-encrypted \
     --version 1.0.0 \
-    --workdir /tmp/model \
+    --workdir "${WORKDIR}" \
     --smoke-test
 ```
 
@@ -161,8 +167,10 @@ not published for `consume`) prompts for a replacement instead of failing outrig
 `--check-only` to only resolve/validate `--version` and print it, without publishing or downloading
 anything.
 
-`--workdir` is where the consumer writes the decrypted model; remove it once you're done inspecting
-the result (`rm -rf /tmp/model`), the local equivalent of the cleanup Option 3 does automatically.
+`--workdir` is where the consumer writes the decrypted model; it must never be a fixed `/tmp` path
+(see [`docs/decisions.md`](docs/decisions.md#local-runs-outside-kubernetes-do-not-decrypt-into-tmp-either)
+for why). Remove it once you're done inspecting the result (`rm -rf "${WORKDIR}"`), the local
+equivalent of the cleanup Option 3 does automatically.
 
 ### Option 3 — Full end-to-end demo on Kubernetes
 
