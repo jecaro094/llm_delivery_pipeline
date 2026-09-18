@@ -86,10 +86,11 @@ nothing to publish yourself — see [`demo/README.md`](demo/README.md).
 ### Fast path — pinned demo artifact (no account, no token)
 
 Runs the real consumer against a real, already-published artifact using a demo-only encryption key
-committed to the repository on purpose — see [`demo/README.md`](demo/README.md) for why that
-exception is safe. This proves the same thing Option 2's consume step proves (download, decryption,
-model loading) against a real published artifact, without the producer side or the Secret/Pod
-machinery from Option 3.
+and signing public key committed to the repository on purpose — see
+[`demo/README.md`](demo/README.md) for why that exception is safe. This proves the same thing
+Option 2's consume step proves (signature verification, download, decryption, model loading)
+against a real published artifact, without the producer side or the Secret/Pod machinery from
+Option 3.
 
 **Dependencies needed:** Python 3.12+ only. No Docker, no minikube, no Hugging Face account or
 token, and nothing to publish.
@@ -101,10 +102,10 @@ pip install -e ".[consumer,dev]"
 
 WORKDIR="$(mktemp -d)"   # a throwaway directory for the decrypted model -- never /tmp itself
 
-ENCRYPTION_KEY_FILE=demo/encryption-key \
+ENCRYPTION_KEY_FILE=demo/encryption-key SIGNING_PUBLIC_KEY_FILE=demo/signing-public-key.pem \
   python -m model_pipeline consume \
     --repo jecaro/bert-tiny-encrypted \
-    --version demo \
+    --version demo-signed \
     --workdir "${WORKDIR}" \
     --smoke-test
 
